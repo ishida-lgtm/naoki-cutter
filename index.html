@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>Naoki Cutter</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Naoki Cutter</h1>
+    <p class="subtitle">つなぐ・切る・トランジション・4K書き出し専用</p>
+  </header>
+
+  <main>
+    <section class="clip-panel">
+      <div class="preview-wrap">
+        <div id="previewVideoBox" class="preview-video-box">
+          <video id="previewVideo" playsinline></video>
+          <div id="previewEmpty" class="preview-empty">クリップをクリックするとここで再生できます</div>
+        </div>
+        <div class="zoom-row">
+          <span>ズーム</span>
+          <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1" disabled />
+          <span id="zoomValue" class="zoom-value">1.0x</span>
+          <button id="zoomResetBtn" disabled>リセット</button>
+          <span class="zoom-hint">（映像をドラッグで位置調整・クリックでその位置を中心に）</span>
+        </div>
+        <div class="zoom-row">
+          <label class="keyframe-toggle">
+            <input type="checkbox" id="panAnimatedToggle" disabled />
+            キーフレームでズーム位置を動かす
+          </label>
+          <button id="addKeyframeBtn" disabled>🔑 現在位置に追加</button>
+          <button id="removeKeyframeBtn" disabled>キーフレーム削除</button>
+          <button id="autoTrackBtn" disabled>🎯 自動追跡</button>
+          <span class="zoom-hint">（開始点まで再生位置を合わせてからクリック→映像内の被写体をクリック）</span>
+        </div>
+        <div id="kfStrip" class="kf-strip hidden">
+          <div class="kf-strip-track"></div>
+          <div id="kfStripMarkers" class="kf-strip-markers"></div>
+          <div id="kfStripPlayhead" class="kf-strip-playhead"></div>
+        </div>
+        <div class="zoom-row">
+          <span>速度</span>
+          <select id="speedSelect" disabled>
+            <option value="0.25">0.25倍（スロー）</option>
+            <option value="0.5">0.5倍（スロー）</option>
+            <option value="0.75">0.75倍</option>
+            <option value="1" selected>1倍（標準）</option>
+            <option value="1.5">1.5倍</option>
+            <option value="2">2倍（早送り）</option>
+          </select>
+          <span class="zoom-hint">（このクリップだけ書き出しに反映されます）</span>
+        </div>
+        <div class="zoom-row">
+          <span>区間速度</span>
+          <button id="speedSegStartBtn" disabled>［ 区間の開始点</button>
+          <button id="speedSegEndBtn" disabled>区間の終了点 ］</button>
+          <span id="speedSegPending" class="zoom-hint">開始・終了 未設定</span>
+          <select id="speedSegSpeed" disabled>
+            <option value="0.25">0.25倍（スロー）</option>
+            <option value="0.5" selected>0.5倍（スロー）</option>
+            <option value="0.75">0.75倍</option>
+            <option value="1.5">1.5倍</option>
+            <option value="2">2倍（早送り）</option>
+          </select>
+          <button id="speedSegAddBtn" disabled>区間を追加</button>
+        </div>
+        <ul id="speedSegList" class="speed-seg-list"></ul>
+        <div id="scrubber" class="scrubber">
+          <div class="scrubber-track"></div>
+          <div id="scrubberRange" class="scrubber-range"></div>
+          <div id="scrubberPlayhead" class="scrubber-playhead"></div>
+          <div id="keyframeMarkers" class="keyframe-markers"></div>
+          <div id="handleStart" class="scrubber-handle handle-start"></div>
+          <div id="handleEnd" class="scrubber-handle handle-end"></div>
+        </div>
+        <div class="preview-controls">
+          <button id="stepBackBtn" disabled title="1コマ戻る">◀︎|</button>
+          <button id="playPauseBtn" disabled>▶ 再生</button>
+          <button id="stepForwardBtn" disabled title="1コマ進む">|▶︎</button>
+          <button id="setInBtn" disabled>［ ここを開始点に</button>
+          <button id="setOutBtn" disabled>ここを終了点に ］</button>
+          <button id="playAllBtn" disabled>▶▶ つなぎ目を通しで再生</button>
+          <button id="exportSelectedBtn" disabled>🎬 このクリップのみ書き出す</button>
+          <span id="previewTime" class="preview-time">00:00 / 00:00</span>
+        </div>
+        <p class="shortcut-hint">
+          Space/L 再生（L連打で2→5→10→20倍速） ・ J 逆再生（連打で2→5→10→20倍速） ・ K 停止 ・ ←/→ 1コマ送り ・ B その位置でカット ・ N 再生位置より前を削除 ・ M 再生位置より後ろを削除 ・ Delete 選択中クリップを削除 ・ Z 戻す ・ X やり直す
+        </p>
+
+        <div id="timelineWrap" class="timeline-wrap">
+          <div id="timelineRuler" class="tl-ruler"></div>
+          <div id="timelineTrack" class="tl-track"></div>
+          <div id="timelinePlayhead" class="tl-playhead"></div>
+        </div>
+      </div>
+
+      <div class="clip-scroll-area">
+        <div class="panel-header">
+          <h2>クリップ</h2>
+          <button id="addFilesBtn">＋ 動画を追加</button>
+        </div>
+        <div id="dropZone" class="drop-zone">
+          ここに動画ファイルをドラッグ＆ドロップ
+        </div>
+
+        <div class="bulk-transition-row">
+          <span>つなぎ目を一括設定</span>
+          <select id="bulkTransitionType">
+            <option value="cut">カット</option>
+            <option value="crossfade">クロスフェード</option>
+            <option value="dissolve" selected>ディゾルブ</option>
+          </select>
+          <input type="number" id="bulkTransitionDuration" min="0.1" step="0.1" value="0.5" />
+          <span>秒</span>
+          <button id="applyBulkTransitionBtn">全つなぎ目に適用</button>
+        </div>
+
+        <ul id="clipList" class="clip-list"></ul>
+      </div>
+    </section>
+
+    <section class="export-panel">
+      <h2>書き出し設定</h2>
+      <div class="field-row">
+        <label>向き</label>
+        <select id="orientationSelect">
+          <option value="landscape">横動画 (16:9)</option>
+          <option value="portrait">縦動画 (9:16)</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>画質</label>
+        <select id="qualitySelect">
+          <option value="4k" selected>4K</option>
+          <option value="fhd">フルHD</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>コーデック</label>
+        <select id="codecSelect">
+          <option value="h264" selected>H.264（互換性重視）</option>
+          <option value="h265">H.265（高圧縮・容量小）</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label>フレームレート</label>
+        <select id="fpsSelect">
+          <option value="30" selected>30fps</option>
+          <option value="60">60fps</option>
+        </select>
+      </div>
+      <button id="exportBtn" class="primary" disabled>書き出す</button>
+      <div id="progressWrap" class="progress-wrap hidden">
+        <div id="progressBar" class="progress-bar"></div>
+        <span id="progressText">0%</span>
+      </div>
+      <button id="cancelExportBtn" class="cancel-btn hidden">書き出しを中止</button>
+      <p id="statusText" class="status-text"></p>
+
+      <div class="cache-row">
+        <button id="clearCacheBtn">🗑️ アプリのキャッシュを削除</button>
+        <span class="cache-hint">（書き出し済み動画は消えません）</span>
+      </div>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
