@@ -19,6 +19,7 @@ npx electron-packager . "Naoki Cutter" \
   --arch=arm64 \
   --out=dist \
   --overwrite \
+  '--ignore=^/release($|/)' \
   --app-bundle-id=com.naoki.cutter
 
 /usr/bin/codesign --remove-signature "$APP_PATH" 2>/dev/null || true

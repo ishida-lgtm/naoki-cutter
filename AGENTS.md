@@ -101,6 +101,13 @@ the normal export settings. Comparison clip IDs, absolute source start times,
 and audio choice are included in lightweight project save/restore data.
 `@` toggles the full-window comparison editor from either direction.
 
+The header `再生画面を大きく` button toggles a persistent large-preview
+layout for ordinary one-clip editing. Large mode hides only the right export
+settings panel, expands the clip panel to the full window width, and raises the
+preview height cap from 38% to 68% of the window. It must not reload media,
+seek, or change edit state; switching back restores the normal two-column
+layout. The preference is stored as `largePreview` in renderer localStorage.
+
 ## Stack
 
 - Electron 32, **no asar** (`electron-packager` without asar packing) — this
@@ -481,8 +488,9 @@ ZIP.
    npm run build:release
    ```
 
-   `scripts/build-release.sh` preserves electron-packager, builds arm64 without
-   asar, ad-hoc signs and verifies the app, then creates
+   `scripts/build-release.sh` preserves electron-packager, excludes the local
+   `release/` archive directory so older ZIPs are never nested into the app,
+   builds arm64 without asar, ad-hoc signs and verifies the app, then creates
    `release/v<VERSION>/Naoki-Cutter-mac-arm64.zip`.
 3. Commit the release source, tag the same version, and push both:
 

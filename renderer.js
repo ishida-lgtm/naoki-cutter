@@ -19,6 +19,7 @@ const waveformByPath = new Map();
 const waveformLoads = new Map();
 let recordingMode = false;
 let comparisonMode = false;
+let largePreview = localStorage.getItem('largePreview') === 'true';
 let lastExportedPath = localStorage.getItem('lastExportedPath') || null;
 let analysisInProgress = false;
 let recordingActive = false;
@@ -65,6 +66,7 @@ const clipList = document.getElementById('clipList');
 const dropZone = document.getElementById('dropZone');
 const addFilesBtn = document.getElementById('addFilesBtn');
 const recordModeBtn = document.getElementById('recordModeBtn');
+const previewSizeBtn = document.getElementById('previewSizeBtn');
 const exportBtn = document.getElementById('exportBtn');
 const statusText = document.getElementById('statusText');
 const progressWrap = document.getElementById('progressWrap');
@@ -205,6 +207,25 @@ const TL_MARKER_WIDTH = 6;
 skimmingToggle.checked = localStorage.getItem('skimmingEnabled') === 'true';
 let waveformsVisible = localStorage.getItem('waveformsVisible') !== 'false';
 document.body.classList.toggle('waveforms-hidden', !waveformsVisible);
+document.body.classList.toggle('preview-large', largePreview);
+previewSizeBtn.classList.toggle('active', largePreview);
+previewSizeBtn.setAttribute('aria-pressed', String(largePreview));
+previewSizeBtn.textContent = largePreview ? '▣ 標準サイズへ' : '⛶ 再生画面を大きく';
+
+function setLargePreview(enabled) {
+  largePreview = Boolean(enabled);
+  localStorage.setItem('largePreview', String(largePreview));
+  document.body.classList.toggle('preview-large', largePreview);
+  previewSizeBtn.classList.toggle('active', largePreview);
+  previewSizeBtn.setAttribute('aria-pressed', String(largePreview));
+  previewSizeBtn.textContent = largePreview ? '▣ 標準サイズへ' : '⛶ 再生画面を大きく';
+  requestAnimationFrame(() => {
+    updatePreviewBoxAspect();
+    applyPreviewZoom();
+  });
+}
+
+previewSizeBtn.addEventListener('click', () => setLargePreview(!largePreview));
 
 function fmt(sec) {
   return Number(sec).toFixed(2);
@@ -1524,7 +1545,7 @@ function updatePreviewBoxAspect() {
   const availWidth = parent.clientWidth - parseFloat(parentStyle.paddingLeft) - parseFloat(parentStyle.paddingRight);
   // Keep the enlarged timeline fully visible even on a small window. The
   // preview remains larger on taller displays because this scales with height.
-  const maxHeight = window.innerHeight * 0.38;
+  const maxHeight = window.innerHeight * (largePreview ? 0.68 : 0.38);
 
   let boxWidth = availWidth;
   let boxHeight = boxWidth / ratio;
