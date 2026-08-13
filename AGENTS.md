@@ -8,6 +8,99 @@ editing. The user is non-technical; they interact with this only through the
 built app, never the source. Keep changes simple and prefer fixing root causes
 over adding options/flags.
 
+**User workflow preference:** whenever a new feature is added, explicitly ask
+the user whether they also want a keyboard shortcut for it. Do this at handoff
+even when the feature is already reachable by mouse; do not silently invent a
+key unless the user has specified one.
+
+The keyboard `+` / `;` key (the physical key immediately to the right of `L` on
+the user's Japanese keyboard, with or without Shift) invokes the same
+keyframe-add path as the toolbar `＋` button. Adding a keyframe automatically
+enables `panAnimated`, so the shortcut must not require a separate click on the
+`キー` checkbox.
+
+**Multi-clip export selection.** `exportSelectedClipIds` is distinct from the
+single active `selectedClipId`: clip-row `書出` checkboxes choose any number of
+clips for one export, while ordinary selection still controls preview/editing.
+Export preserves timeline order. A transition is retained only when two picked
+clips were adjacent in the original timeline; skipped gaps join with a cut.
+The lightweight project JSON stores these IDs, stale IDs are pruned on render,
+and splitting an export-picked clip propagates the pick to both resulting
+halves.
+`E` invokes the checked-clips export button only when at least one clip is
+picked and no export is already running; key repeat must remain ignored so one
+keypress cannot open multiple save dialogs.
+
+**Review recording and waveforms.** Timeline waveforms are generated in the
+main process with bundled ffmpeg (`audio-waveform`) and cached by source path,
+size, mtime, and bin count; the large peak array is intentionally not persisted
+inside project JSON. The fullscreen recording overlay draws only the effective
+crop/zoom/pan of the selected source frame to a canvas, so UI controls never
+appear in the captured video. Its Web Audio graph mixes the original video's
+audio and microphone through independent 0–200% gains. MediaRecorder emits
+small WebM chunks to main-process temp storage; `finish-review-recording`
+transcodes them to H.264/AAC MP4 and always removes the temporary WebM. Never
+copy, modify, or delete the original source video as part of this workflow.
+`R` is contextual: enter recording mode, then start, then stop; Escape closes
+the mode only while idle. `W` toggles waveform visibility and persists that UI
+preference in localStorage. Both shortcuts ignore key repeat.
+
+The recording canvas owns normalized annotation strokes. The toolbar offers
+2 seconds, 3 seconds (default), or always-visible duration buttons, persisted
+through localStorage. A pen stroke or arrow stays visible while it is being
+drawn, then uses the selected duration after pointer-up. Strokes are redrawn after every video frame until expiry,
+which makes them part of the captured canvas stream while keeping the floating
+tool controls out of the final MP4. During capture, J shuttles backward, K toggles play/pause, and L
+shuttles forward as keyboard-only playback controls; the user explicitly does
+not want J/K/L buttons in the recording toolbar. Source/mic mute buttons drive
+the same independent Web Audio gain nodes as their sliders.
+Left/Right Arrow also remain keyboard-only in recording mode and route through
+the existing `stepFrame(-1/1)` path for exact one-frame movement.
+J/K/L ignore OS key-repeat; separate presses change shuttle speed. Recording-mode
+K must route through `pressK()` so reverse timers are cancelled before L starts.
+During reverse seeks, the recording canvas retains its last fully decoded video
+frame instead of clearing to black, and reverse progression uses fixed decoded
+steps so slow 4K seeks do not accumulate into sudden time jumps.
+Pen, arrow, and clear-all deliberately remain toolbar buttons only; the user
+explicitly declined keyboard shortcuts for these three drawing actions.
+
+The recording overlay canvas is intentionally capped at 30fps while video,
+reverse shuttle, or pointer drawing is active, and at 5fps while paused. The
+MediaRecorder canvas stream is 30fps, so rendering at a 60/120Hz display rate
+adds GPU load without improving the recording. Export resolution is presented
+as two always-visible buttons: Full HD 1920x1080 (default/low load) and 4K
+3840x2160; portrait mode swaps those dimensions.
+Screen recording has its own persisted FHD/4K toolbar toggle, independent of
+normal export quality. FHD records a 1920x1080 canvas at 12 Mbps; 4K records a
+3840x2160 canvas at 35 Mbps, with portrait dimensions swapped. Resolution
+buttons are disabled during active recording because resizing a captured canvas
+mid-stream can corrupt or invalidate the MediaRecorder output.
+The review-recording MP4 transcode must apply `-vf fps=30`. Canvas MediaRecorder
+WebM timestamps can otherwise produce nonsensical nominal frame-rate metadata
+(especially at 4K), causing poor playback compatibility despite correct image
+dimensions.
+
+Two-clip comparison is an in-editor workflow. The user selects left/top and
+right/bottom clips, enters `2画面で編集`, and gets two synchronized video panes
+inside a full-window editing view rather than a playback-only preview. Both
+sides stay visible and together fill the screen (left/right for landscape,
+top/bottom for portrait); clicking a pane or using `左／上を編集` and
+`右／下を編集` chooses which side receives edits while playback remains
+synchronized. The existing zoom, drag/click pan, keyframe, and auto-track
+controls edit the active side independently. Each side also has
+a source-position scrubber; the numeric start fields and one-frame nudge
+buttons remain available. Active-side one-frame nudges preserve the current
+comparison elapsed position instead of restarting at zero. J/K/L, Space, and
+Left/Right operate the synchronized
+comparison while this mode is active. Landscape output uses hstack; portrait
+output uses vstack. `export-comparison` receives both clips' zoom/pan/keyframe
+data and renders each pane over a black canvas, preserving whole-source fit at
+zoom 1 while matching edited zoom/pan at higher zoom. FHD/4K, codec, fps,
+orientation, progress reporting, cancellation, and VideoToolbox encoding reuse
+the normal export settings. Comparison clip IDs, absolute source start times,
+and audio choice are included in lightweight project save/restore data.
+`@` toggles the full-window comparison editor from either direction.
+
 ## Stack
 
 - Electron 32, **no asar** (`electron-packager` without asar packing) — this
@@ -60,6 +153,13 @@ One `clip` object per timeline entry (in the `clips` array):
 
 `transitions` is a parallel array, length `clips.length - 1`:
 `{ type: 'cut' | 'crossfade' | 'dissolve', duration }`.
+
+Projects can be saved to `app.getPath('userData')/projects/*.json`. A project
+contains only the `clips`/`transitions` edit model, selected clip, and export
+settings; source media is referenced by absolute path and is never copied.
+The UI can delete every saved project plus Electron's temporary cache in one
+action, but that cleanup deliberately never follows media paths and never
+touches source or exported videos.
 
 **Everything downstream keys off `panKeyframes[].t` and
 `speedSegments[].start/end` being clip-local time (0 at `trimStart`)** — not
@@ -154,6 +254,14 @@ Don't remove this guard without understanding why it's there — it was added
 after multiple rounds of misdiagnosing this as a crop-math bug when the crop
 math was actually already correct.
 
+**High-speed shuttle preview.** Chromium accepts native positive
+`playbackRate` values only up to 16x; assigning 20x throws. Forward L-key
+shuttle therefore cycles 1/2/5/10/16x and uses native playback (frame dropping
+is handled by Chromium). Do not replace this with rapid `currentTime` writes:
+the old 50ms seek loop starved 4K decoding and looked frozen. Reverse shuttle,
+which has no native playback support, waits for each seek to decode before
+requesting the next one.
+
 **Auto-track ("🎯 自動追跡") is deliberately not ML-based.** It's a
 dependency-free tracker in `trackSubject()` (main.js): extract downscaled
 grayscale frames via ffmpeg at a fixed interval, then frame-to-frame, find the
@@ -194,6 +302,52 @@ happens before segmentation), `split`/`asplit` into one branch per segment,
 `clipOutputDuration()` replaces the old flat `trimDur / speed` for computing
 each clip's output-timeline duration (used for transition offsets) — it now
 sums per-segment durations.
+
+**Timeline edge trimming.** Every `.tl-clip` has left/right drag handles.
+Dragging changes `trimStart`/`trimEnd` and the magnetic timeline reflows. A
+start-edge change also shifts local `panKeyframes[].t` and speed-segment times;
+an end-edge change clips them and adds an interpolated pan boundary where
+needed. Keep timeline handles, scrubber handles, N/M shortcuts, and numeric
+trim fields routed through `setClipTrimStart()` / `setClipTrimEnd()` so these
+local-time adjustments never diverge.
+
+**Stable compact layout.** The always-visible page header owns `addFilesBtn`
+and `dropZone`, so adding media never requires scrolling the clip list. Preview
+editing controls live in a single fixed-height, horizontally scrollable
+`.edit-toolbar`; the keyframe strip uses `visibility:hidden` rather than
+`display:none` to reserve its height. `.preview-wrap` is deliberately not
+sticky: the user must be able to scroll the left panel normally. Do not
+reintroduce selected-item `scrollIntoView()` in `render()` — it caused the
+panel to jump after cuts and keyframe edits. The timeline is 72px tall and the
+preview height cap is 38vh so both remain visible in an 800x600 window.
+
+**Timeline skimming.** The `skimmingToggle` setting preserves ordinary
+click-to-seek while optionally previewing the timeline position underneath the
+mouse without a click. Hover targets are coalesced through `queueSkim()` /
+`processPendingSkim()` so rapid movement over long 4K clips cannot flood the
+video element with overlapping seeks. The orange `timelineSkimmer` is distinct
+from the red playhead, and `B` cuts at the current skimmer target while the
+pointer is over the timeline. Keep the checkbox focus exception in the keyboard
+handler so `B`, `J`, `K`, and `L` continue to work immediately after changing
+this setting. `S` toggles skimming without moving the playhead, `A` always exits
+skimming and returns to ordinary click-selection mode, and `B` cuts at the
+active skimmer target. The preference is stored in both localStorage and saved
+project settings.
+
+`N` must also consume the explicit skimmer target rather than trusting
+`previewVideo.currentTime`: rapid hover decoding can lag behind the orange line.
+Cancel pending skim seeks before trimming, then seek the red playhead back to
+the retained trim boundary after rerendering so it never jumps to a stale frame.
+The same `N` path also moves the physical macOS pointer to that new boundary via
+the narrow `move-cursor` IPC and bundled `bin/move-cursor` CoreGraphics helper.
+Renderer client coordinates must be converted through the originating window's
+`getContentBounds()`; do not use hard-coded title-bar or Retina offsets.
+While the user horizontally scrolls with skimming active, the mouse must never
+be warped. The timeline `scroll` handler recalculates the target underneath the
+last fixed client coordinate, keeping the orange skimmer and red playhead at
+the pointer's screen position while clips move beneath them. Auto-centering in
+`updateTimelinePlayhead()` stays disabled while the skimmer is active to avoid
+scroll/seek feedback loops.
 
 **VideoToolbox encoding.** `h264_videotoolbox` / `hevc_videotoolbox` with
 `-q:v` (quality-based, like CRF) rather than `-b:v` (flat bitrate) — chosen so
@@ -250,10 +404,6 @@ data" every time:
 
 ## Known limitations / things not yet done
 
-- No project persistence — closing/rebuilding the app loses all clips,
-  trims, keyframes, and speed segments. If this becomes painful, a simple
-  JSON save/load of the `clips`/`transitions` arrays to a project file would
-  cover it; nothing else in the data model needs to change.
 - Auto-track only extrapolates forward from the seed point/time to
   `trimEnd`, and only within `MAX_TRACK_SECONDS` (90s). It can't track
   backward from the seed, and offers no path to track through the whole
@@ -261,5 +411,92 @@ data" every time:
 - Auto-track can confuse similar-looking subjects (e.g. two surfers close
   together) since it's brightness-based, not identity-based — this is why
   it's click-to-seed rather than fully automatic.
-- No automated tests. All verification in this project's history has been
-  manual, against real footage, using the methodology above.
+- Automatic-update version parsing/release-summary tests live in
+  `test/updater.test.js`; video editing and export verification remains manual
+  against real footage, using the methodology above.
+
+## surfing-analyzer integration
+
+Naoki Cutter can send the most recently exported video to the separate
+`/Users/ishidanaoki/surfing-analyzer` project. This is a post-export action
+only: it does not modify the source video, clips, timeline, or export flow.
+Start the existing FastAPI backend before testing the integration:
+
+```bash
+cd /Users/ishidanaoki/surfing-analyzer/backend
+source venv/bin/activate
+uvicorn main:app --reload --port 8000
+```
+
+The integration uses these existing endpoints on `http://127.0.0.1:8000`:
+
+- `POST /api/analyze` with multipart `file` analyzes scenes and scores.
+- `POST /api/reference/upload` with multipart `file`, required `name`, and
+  optional `description` stores the same export as a reference video.
+
+Network access follows the existing Electron IPC boundary. `renderer.js`
+remembers each successful normal, selected-clip, comparison, and screen-
+recording export path (also in `localStorage`) and owns the confirmation UI.
+`preload.js` exposes only `analyzeExportedVideo` and
+`saveExportedAsReference`. `main.js` implements the two `ipcMain.handle`
+handlers and streams multipart files to the local backend rather than loading
+an entire video into renderer memory. Large base64 `frame_images` and
+reference `preview` fields are removed before the result crosses IPC.
+`index.html` and `style.css` contain the export-panel button and result/reference
+modal. Keep the endpoint host fixed to localhost unless the trust and IPC
+model is deliberately revisited.
+
+## Free GitHub Releases updater
+
+The public distribution repository is
+`https://github.com/ishida-lgtm/naoki-cutter`. The updater intentionally uses
+no GitHub token or other secret. `updater.js` calls the anonymous public API at
+`GET https://api.github.com/repos/ishida-lgtm/naoki-cutter/releases/latest` and
+compares its `tag_name` with `app.getVersion()` (the `version` in
+`package.json`). The renderer checks shortly after startup and displays a
+non-blocking banner. `preload.js` exposes the `check-for-update` and
+`install-update` IPC paths; all network, ZIP, signature, and filesystem work
+stays in the main process through `updater.js`.
+
+The expected release asset name is exactly
+`Naoki-Cutter-mac-arm64.zip`. Before installing, the updater extracts into an
+app-specific temporary directory, verifies bundle ID `com.naoki.cutter` and
+the ad-hoc code signature, and removes quarantine with `xattr -dr
+com.apple.quarantine`. It then starts a detached temporary zsh helper and
+quits. The helper backs up the existing `/Applications/Naoki Cutter.app`,
+copies the staged app, removes quarantine again, starts the replacement, and
+rolls back if copying fails. A failed update must never prevent ordinary video
+editing; permission errors tell the user to replace the app manually from the
+ZIP.
+
+### Release procedure
+
+1. Update `version` in both `package.json` and the root entries of
+   `package-lock.json` using semantic `major.minor.patch` format.
+2. Run the updater tests and build/sign/zip the current version:
+
+   ```bash
+   cd /Users/ishidanaoki/video-editor-app
+   npm test
+   npm run build:release
+   ```
+
+   `scripts/build-release.sh` preserves electron-packager, builds arm64 without
+   asar, ad-hoc signs and verifies the app, then creates
+   `release/v<VERSION>/Naoki-Cutter-mac-arm64.zip`.
+3. Commit the release source, tag the same version, and push both:
+
+   ```bash
+   git add -A
+   git commit -m "Release v<VERSION>"
+   git tag -a "v<VERSION>" -m "Naoki Cutter v<VERSION>"
+   git push origin main
+   git push origin "v<VERSION>"
+   ```
+
+4. On GitHub, create a Release from `v<VERSION>`, attach the exact ZIP above,
+   add short Japanese release notes, and publish it (not draft/prerelease).
+5. Verify the anonymous API response and asset name, then launch an older app
+   build to test the banner, `更新する`, replacement, and automatic restart.
+   This final test quits the running app and replaces `/Applications/Naoki
+   Cutter.app`, so save or explicitly discard any in-memory edit first.

@@ -1,14 +1,20 @@
 {
   "name": "naoki-cutter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "つなぐ・切る・トランジション・4K書き出しに特化したシンプル動画編集アプリ",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "build:release": "bash scripts/build-release.sh"
   },
   "author": "",
   "license": "UNLICENSED",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ishida-lgtm/naoki-cutter.git"
+  },
   "devDependencies": {
     "electron": "^32.3.3",
     "electron-packager": "^17.1.2"

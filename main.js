@@ -1,7 +1,10 @@
 const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
+const http = require('http');
+const { createUpdater } = require('./updater');
 
 // Bundled in bin/ (with its dylib deps rewritten to @executable_path/libs via
 // dylibbundler) so the app runs on any Mac without needing Homebrew installed —
@@ -9,10 +12,98 @@ const { spawn, spawnSync } = require('child_process');
 // (no asar), so this path resolves correctly in both cases.
 const FFMPEG = path.join(__dirname, 'bin', 'ffmpeg');
 const FFPROBE = path.join(__dirname, 'bin', 'ffprobe');
+const MOVE_CURSOR = path.join(__dirname, 'bin', 'move-cursor');
 
 let mainWindow;
 let currentExportProc = null;
 let exportCancelled = false;
+const waveformCache = new Map();
+const recordingSessions = new Map();
+const SURF_ANALYZER_HOST = '127.0.0.1';
+const SURF_ANALYZER_PORT = 8000;
+const updater = createUpdater({ app, getMainWindow: () => mainWindow });
+
+ipcMain.handle('check-for-update', () => updater.check());
+ipcMain.handle('install-update', () => updater.install());
+
+function postMultipartToSurfAnalyzer(endpoint, filePath, fields = {}) {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) {
+    return Promise.reject(new Error('書き出した動画ファイルが見つかりません。もう一度書き出してください。'));
+  }
+  const boundary = `----NaokiCutter${crypto.randomUUID().replaceAll('-', '')}`;
+  const chunks = [];
+  for (const [name, value] of Object.entries(fields)) {
+    chunks.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${String(value)}\r\n`
+    ));
+  }
+  const safeName = path.basename(filePath).replace(/["\r\n]/g, '_');
+  const fileHeader = Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeName}"\r\n` +
+    'Content-Type: video/mp4\r\n\r\n'
+  );
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const contentLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0) +
+    fileHeader.length + fs.statSync(filePath).size + footer.length;
+
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: SURF_ANALYZER_HOST,
+      port: SURF_ANALYZER_PORT,
+      path: endpoint,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': contentLength,
+      },
+      timeout: 10 * 60 * 1000,
+    }, (response) => {
+      const responseChunks = [];
+      response.on('data', (chunk) => responseChunks.push(chunk));
+      response.on('end', () => {
+        const body = Buffer.concat(responseChunks).toString('utf8');
+        let data;
+        try { data = body ? JSON.parse(body) : {}; }
+        catch { data = { detail: body || '解析アプリから不正な応答が返りました' }; }
+        if (response.statusCode >= 200 && response.statusCode < 300) resolve(data);
+        else reject(new Error(data.detail || `解析アプリのエラー (${response.statusCode})`));
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('解析に時間がかかりすぎたため中止しました。')));
+    request.on('error', (error) => {
+      if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH'].includes(error.code)) {
+        reject(new Error('解析アプリが起動していません。surfing-analyzerでuvicornを起動してください。'));
+      } else {
+        reject(error);
+      }
+    });
+    chunks.forEach((chunk) => request.write(chunk));
+    request.write(fileHeader);
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', (error) => request.destroy(error));
+    stream.on('end', () => request.end(footer));
+    stream.pipe(request, { end: false });
+  });
+}
+
+ipcMain.handle('analyze-exported-video', async (event, filePath) => {
+  const result = await postMultipartToSurfAnalyzer('/api/analyze', filePath);
+  // Skeleton frame images are large and the Cutter confirmation view only
+  // needs text/score results. Avoid copying multi-megabyte base64 through IPC.
+  const { frame_images, ...summary } = result;
+  return summary;
+});
+
+ipcMain.handle('save-exported-as-reference', async (event, { filePath, name, description }) => {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) throw new Error('参考動画の名前を入力してください。');
+  const result = await postMultipartToSurfAnalyzer('/api/reference/upload', filePath, {
+    name: cleanName,
+    description: String(description || ''),
+  });
+  const { preview, ...summary } = result;
+  return summary;
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -53,6 +144,230 @@ ipcMain.handle('select-output', async (event, defaultName) => {
   });
   if (result.canceled) return null;
   return result.filePath;
+});
+
+ipcMain.handle('move-cursor', async (event, position) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed() || !position) return false;
+  const clientX = Number(position.clientX);
+  const clientY = Number(position.clientY);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+
+  // Renderer coordinates are relative to the content area in Electron DIP.
+  // CoreGraphics uses the same point-based global coordinate space on macOS,
+  // including negative coordinates on displays arranged left of the primary.
+  const bounds = sourceWindow.getContentBounds();
+  const screenX = bounds.x + clientX;
+  const screenY = bounds.y + clientY;
+  const result = spawnSync(MOVE_CURSOR, [String(screenX), String(screenY)], {
+    stdio: 'ignore',
+    timeout: 1000,
+  });
+  return !result.error && result.status === 0;
+});
+
+ipcMain.handle('set-full-screen', async (event, enabled) => {
+  const sourceWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!sourceWindow || sourceWindow.isDestroyed()) return false;
+  sourceWindow.setFullScreen(Boolean(enabled));
+  return true;
+});
+
+ipcMain.handle('audio-waveform', async (event, { filePath, bins = 1200 }) => {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) return [];
+  const safeBins = Math.max(100, Math.min(4000, Number(bins) || 1200));
+  const stat = fs.statSync(filePath);
+  const cacheKey = `${filePath}:${stat.size}:${stat.mtimeMs}:${safeBins}`;
+  if (waveformCache.has(cacheKey)) return waveformCache.get(cacheKey);
+  if (!hasAudioStream(filePath)) {
+    waveformCache.set(cacheKey, []);
+    return [];
+  }
+
+  const decoded = spawnSync(FFMPEG, [
+    '-v', 'error', '-i', filePath, '-vn', '-ac', '1', '-ar', '1000',
+    '-f', 'f32le', 'pipe:1',
+  ], { maxBuffer: 128 * 1024 * 1024 });
+  if (decoded.error || decoded.status !== 0 || !decoded.stdout.length) return [];
+  const sampleCount = Math.floor(decoded.stdout.length / 4);
+  const samples = new Float32Array(
+    decoded.stdout.buffer,
+    decoded.stdout.byteOffset,
+    sampleCount
+  );
+  const peaks = new Array(safeBins).fill(0);
+  for (let bin = 0; bin < safeBins; bin += 1) {
+    const start = Math.floor((bin * sampleCount) / safeBins);
+    const end = Math.max(start + 1, Math.floor(((bin + 1) * sampleCount) / safeBins));
+    let peak = 0;
+    for (let i = start; i < Math.min(end, sampleCount); i += 1) {
+      const value = Math.abs(samples[i]);
+      if (value > peak) peak = value;
+    }
+    peaks[bin] = Math.min(1, peak);
+  }
+  waveformCache.set(cacheKey, peaks);
+  return peaks;
+});
+
+ipcMain.handle('start-review-recording', async (event, outputPath) => {
+  if (typeof outputPath !== 'string' || !outputPath) throw new Error('保存先が選択されていません');
+  const id = crypto.randomUUID();
+  const tempPath = path.join(app.getPath('temp'), `naoki-review-${id}.webm`);
+  const stream = fs.createWriteStream(tempPath, { flags: 'wx' });
+  recordingSessions.set(id, { stream, tempPath, outputPath, writeChain: Promise.resolve() });
+  return id;
+});
+
+ipcMain.handle('append-review-recording', async (event, { id, chunk }) => {
+  const recording = recordingSessions.get(id);
+  if (!recording) throw new Error('収録セッションが見つかりません');
+  const buffer = Buffer.from(chunk);
+  recording.writeChain = recording.writeChain.then(() => new Promise((resolve, reject) => {
+    recording.stream.write(buffer, (error) => (error ? reject(error) : resolve()));
+  }));
+  await recording.writeChain;
+  return true;
+});
+
+ipcMain.handle('finish-review-recording', async (event, id) => {
+  const recording = recordingSessions.get(id);
+  if (!recording) throw new Error('収録セッションが見つかりません');
+  recordingSessions.delete(id);
+  await recording.writeChain;
+  await new Promise((resolve, reject) => recording.stream.end((error) => (error ? reject(error) : resolve())));
+  try {
+    const encoded = spawnSync(FFMPEG, [
+      '-y', '-v', 'error', '-i', recording.tempPath,
+      '-vf', 'fps=30',
+      '-c:v', 'h264_videotoolbox', '-q:v', '65', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+      recording.outputPath,
+    ], { maxBuffer: 16 * 1024 * 1024 });
+    if (encoded.error || encoded.status !== 0) {
+      throw new Error(`収録動画のMP4変換に失敗しました: ${encoded.stderr.toString().slice(-1000)}`);
+    }
+    return { outputPath: recording.outputPath };
+  } finally {
+    fs.rmSync(recording.tempPath, { force: true });
+  }
+});
+
+ipcMain.handle('cancel-review-recording', async (event, id) => {
+  const recording = recordingSessions.get(id);
+  if (!recording) return false;
+  recordingSessions.delete(id);
+  try { recording.stream.destroy(); } catch {}
+  fs.rmSync(recording.tempPath, { force: true });
+  return true;
+});
+
+// Project files contain only lightweight edit instructions and absolute paths
+// back to the user's original media. Source videos are never copied into this
+// directory and are never deleted by project/cache cleanup.
+function projectsDir() {
+  return path.join(app.getPath('userData'), 'projects');
+}
+
+function validProjectId(id) {
+  return typeof id === 'string' && /^[a-zA-Z0-9-]+$/.test(id);
+}
+
+function projectFilePath(id) {
+  if (!validProjectId(id)) throw new Error('プロジェクトIDが不正です');
+  return path.join(projectsDir(), `${id}.json`);
+}
+
+function projectSummary(doc) {
+  return {
+    id: doc.id,
+    name: doc.name,
+    updatedAt: doc.updatedAt,
+    clipCount: doc.data && Array.isArray(doc.data.clips) ? doc.data.clips.length : 0,
+  };
+}
+
+ipcMain.handle('list-projects', async () => {
+  fs.mkdirSync(projectsDir(), { recursive: true });
+  const projects = [];
+  for (const entry of fs.readdirSync(projectsDir(), { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const doc = JSON.parse(fs.readFileSync(path.join(projectsDir(), entry.name), 'utf8'));
+      if (validProjectId(doc.id) && doc.data && Array.isArray(doc.data.clips)) {
+        projects.push(projectSummary(doc));
+      }
+    } catch {
+      // Ignore a damaged/incomplete save rather than preventing other projects
+      // from appearing in the list.
+    }
+  }
+  return projects.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+});
+
+ipcMain.handle('save-project', async (event, payload) => {
+  if (!payload || !payload.data || !Array.isArray(payload.data.clips)) {
+    throw new Error('保存する編集データが不正です');
+  }
+  const encoded = JSON.stringify(payload.data);
+  if (Buffer.byteLength(encoded, 'utf8') > 10 * 1024 * 1024) {
+    throw new Error('編集データが大きすぎて保存できません');
+  }
+  fs.mkdirSync(projectsDir(), { recursive: true });
+  const id = validProjectId(payload.id) ? payload.id : crypto.randomUUID();
+  const fallbackName = payload.data.clips[0] && payload.data.clips[0].name
+    ? payload.data.clips[0].name.replace(/\.[^.]+$/, '')
+    : '名称未設定';
+  const name = String(payload.name || fallbackName).trim().slice(0, 100) || fallbackName;
+  const doc = {
+    version: 1,
+    id,
+    name,
+    updatedAt: new Date().toISOString(),
+    data: payload.data,
+  };
+  const finalPath = projectFilePath(id);
+  const tempPath = `${finalPath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(doc, null, 2), 'utf8');
+  fs.renameSync(tempPath, finalPath);
+  return projectSummary(doc);
+});
+
+ipcMain.handle('load-project', async (event, id) => {
+  const doc = JSON.parse(fs.readFileSync(projectFilePath(id), 'utf8'));
+  if (!doc.data || !Array.isArray(doc.data.clips) || !Array.isArray(doc.data.transitions)) {
+    throw new Error('保存データが壊れています');
+  }
+  const missingPaths = [...new Set(doc.data.clips.map((c) => c.path).filter((p) => !p || !fs.existsSync(p)))];
+  return { project: doc, missingPaths };
+});
+
+ipcMain.handle('delete-projects-and-cache', async () => {
+  let projectCount = 0;
+  let projectBytes = 0;
+  fs.mkdirSync(projectsDir(), { recursive: true });
+  for (const entry of fs.readdirSync(projectsDir(), { withFileTypes: true })) {
+    // Delete only files created by this project store. Never follow media paths
+    // recorded inside JSON, and never touch exports.
+    if (!entry.isFile() || (!entry.name.endsWith('.json') && !entry.name.endsWith('.json.tmp'))) continue;
+    const target = path.join(projectsDir(), entry.name);
+    try {
+      projectBytes += fs.statSync(target).size;
+      fs.unlinkSync(target);
+      if (entry.name.endsWith('.json')) projectCount++;
+    } catch {
+      // Continue deleting the remaining app-owned saves.
+    }
+  }
+  const userDataPath = app.getPath('userData');
+  const beforeCache = getDirSize(userDataPath);
+  await session.defaultSession.clearCache();
+  await session.defaultSession.clearStorageData();
+  const afterCache = getDirSize(userDataPath);
+  return {
+    projectCount,
+    freedBytes: projectBytes + Math.max(0, beforeCache - afterCache),
+  };
 });
 
 function probeInfo(filePath) {
@@ -663,6 +978,136 @@ ipcMain.handle('export-video', async (event, { clips, transitions, settings }) =
     proc.on('error', (err) => {
       currentExportProc = null;
       reject(err);
+    });
+  });
+});
+
+ipcMain.handle('export-comparison', async (event, { left, right, settings }) => {
+  const duration = Math.min(Number(left.end) - Number(left.start), Number(right.end) - Number(right.start));
+  if (!Number.isFinite(duration) || duration < 0.2) throw new Error('比較できる共通時間が短すぎます');
+  const [outW, outH] = settings.resolution.split('x').map(Number);
+  const portrait = settings.orientation === 'portrait';
+  const paneW = portrait ? outW : Math.floor(outW / 2 / 2) * 2;
+  const paneH = portrait ? Math.floor(outH / 2 / 2) * 2 : outH;
+  const fps = Number(settings.fps) || 30;
+  const comparisonPaneFilters = (source, index, label) => {
+    let srcW = Number(source.width);
+    let srcH = Number(source.height);
+    if (!srcW || !srcH) {
+      const probed = probeDimensionsSync(source.path);
+      if (probed) ({ width: srcW, height: srcH } = probed);
+    }
+    srcW = srcW || paneW;
+    srcH = srcH || paneH;
+
+    const sourceAspect = srcW / srcH;
+    const paneAspect = paneW / paneH;
+    let fitW;
+    let fitH;
+    if (sourceAspect > paneAspect) {
+      fitW = paneW;
+      fitH = paneW / sourceAspect;
+    } else {
+      fitH = paneH;
+      fitW = paneH * sourceAspect;
+    }
+    const zoom = Math.max(1, Math.min(3, Number(source.zoom) || 1));
+    const scaledW = Math.max(2, Math.round(fitW * zoom / 2) * 2);
+    const scaledH = Math.max(2, Math.round(fitH * zoom / 2) * 2);
+    const shiftedKeyframes = source.panAnimated && Array.isArray(source.panKeyframes) && source.panKeyframes.length
+      ? source.panKeyframes
+        .map((keyframe) => ({ ...keyframe, t: Number(keyframe.t) - (Number(source.start) - Number(source.trimStart || 0)) }))
+        .sort((a, b) => a.t - b.t)
+      : null;
+
+    const axisPosition = (axis, paneSize, scaledSize) => {
+      if (scaledSize <= paneSize) return ((paneSize - scaledSize) / 2).toFixed(2);
+      if (shiftedKeyframes) {
+        const center = buildPiecewiseExpr(shiftedKeyframes, axis, scaledSize);
+        return `clip(${(paneSize / 2).toFixed(2)}-(${center}),${paneSize - scaledSize},0)`;
+      }
+      const fraction = Number(source[axis === 'x' ? 'zoomX' : 'zoomY']);
+      const center = (Number.isFinite(fraction) ? fraction : 0.5) * scaledSize;
+      return String(Math.max(paneSize - scaledSize, Math.min(0, paneSize / 2 - center)));
+    };
+    const x = axisPosition('x', paneW, scaledW);
+    const y = axisPosition('y', paneH, scaledH);
+    return [
+      `color=c=black:s=${paneW}x${paneH}:r=${fps}:d=${duration.toFixed(3)}[${label}bg]`,
+      `[${index}:v]setpts=PTS-STARTPTS,scale=${scaledW}:${scaledH},fps=${fps},format=yuv420p[${label}fg]`,
+      `[${label}bg][${label}fg]overlay=x='${x}':y='${y}':shortest=1,setsar=1,format=yuv420p[${label}]`,
+    ];
+  };
+  const filters = [
+    ...comparisonPaneFilters(left, 0, 'cmp0'),
+    ...comparisonPaneFilters(right, 1, 'cmp1'),
+  ];
+  filters.push(portrait ? '[cmp0][cmp1]vstack=inputs=2[vcmp]' : '[cmp0][cmp1]hstack=inputs=2[vcmp]');
+
+  const audioMode = ['left', 'right', 'both', 'none'].includes(settings.audio) ? settings.audio : 'left';
+  const audioFilter = (index, filePath, label) => {
+    if (!hasAudioStream(filePath)) {
+      return `anullsrc=channel_layout=stereo:sample_rate=48000:duration=${duration.toFixed(3)}[${label}]`;
+    }
+    return `[${index}:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,` +
+      `aformat=sample_rates=48000:channel_layouts=stereo[${label}]`;
+  };
+  if (audioMode === 'none') {
+    filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000:duration=${duration.toFixed(3)}[acmp]`);
+  } else if (audioMode === 'both') {
+    filters.push(audioFilter(0, left.path, 'acmp0'));
+    filters.push(audioFilter(1, right.path, 'acmp1'));
+    filters.push('[acmp0][acmp1]amix=inputs=2:duration=shortest:normalize=1[acmp]');
+  } else {
+    const index = audioMode === 'right' ? 1 : 0;
+    const source = audioMode === 'right' ? right : left;
+    filters.push(audioFilter(index, source.path, 'acmp'));
+  }
+
+  const codecArgs = settings.codec === 'h265'
+    ? ['-c:v', 'hevc_videotoolbox', '-q:v', '60', '-tag:v', 'hvc1']
+    : ['-c:v', 'h264_videotoolbox', '-q:v', '65', '-profile:v', 'high'];
+  const args = [
+    '-y',
+    '-ss', String(left.start), '-t', String(duration), '-i', left.path,
+    '-ss', String(right.start), '-t', String(duration), '-i', right.path,
+    '-filter_complex', filters.join(';'),
+    '-map', '[vcmp]', '-map', '[acmp]',
+    ...codecArgs, '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart',
+    settings.outputPath,
+  ];
+
+  exportCancelled = false;
+  return new Promise((resolve, reject) => {
+    const proc = spawn(FFMPEG, args);
+    currentExportProc = proc;
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      const match = text.match(/time=(\d+):(\d+):(\d+\.\d+)/);
+      if (match) {
+        const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+        mainWindow.webContents.send('export-progress', {
+          progress: Math.min(seconds / duration, 1), seconds, totalDuration: duration,
+        });
+      }
+    });
+    proc.on('close', (code) => {
+      currentExportProc = null;
+      if (exportCancelled) {
+        fs.unlink(settings.outputPath, () => {});
+        reject(new Error('CANCELLED'));
+      } else if (code === 0) {
+        resolve({ success: true, outputPath: settings.outputPath });
+      } else {
+        reject(new Error(`比較書き出しに失敗しました (code ${code}):\n${stderr.slice(-2000)}`));
+      }
+    });
+    proc.on('error', (error) => {
+      currentExportProc = null;
+      reject(error);
     });
   });
 });
