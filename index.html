@@ -56,6 +56,12 @@
               </div>
               <button id="compareActiveBackBtn" title="選択中の動画を1コマ早める">−1コマ</button>
               <button id="compareActiveForwardBtn" title="選択中の動画を1コマ遅らせる">＋1コマ</button>
+              <select id="compareSyncModeEditor" class="compare-sync-mode" aria-label="AI同期基準">
+                <option value="takeoff_start">テイクオフ開始</option>
+                <option value="hands_down">手をつく</option>
+                <option value="standing">立ち上がり</option>
+              </select>
+              <button id="compareAutoSyncEditorBtn" class="compare-ai-btn">AIで揃える</button>
               <button id="comparePlayBtn">▶ 同時再生</button>
               <button id="compareRestartBtn">↺ 比較開始へ</button>
               <span id="compareTime">00:00 / 00:00</span>
@@ -190,6 +196,15 @@
           <button id="compareBBackBtn" title="右／下を1コマ早める">−1コマ</button>
           <button id="compareBForwardBtn" title="右／下を1コマ遅らせる">＋1コマ</button>
         </div>
+        <div class="compare-ai-sync-row">
+          <select id="compareSyncMode" aria-label="AI同期基準">
+            <option value="takeoff_start">テイクオフ開始</option>
+            <option value="hands_down">手をついた瞬間</option>
+            <option value="standing">立ち上がった瞬間</option>
+          </select>
+          <button id="compareAutoSyncBtn" class="compare-ai-btn" disabled>AIでタイミングを揃える</button>
+        </div>
+        <p id="compareSyncStatus" class="compare-sync-status">開始位置付近をMac内の姿勢AIで解析します。被写体を中心にしてズームすると精度が上がります。</p>
         <label>音声<select id="compareAudioSelect">
           <option value="left">左／上のみ</option>
           <option value="right">右／下のみ</option>

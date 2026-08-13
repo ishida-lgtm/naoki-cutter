@@ -1022,6 +1022,14 @@ body.timeline-trimming * {
 }
 .compare-sync-row { display: grid; grid-template-columns: auto 72px 1fr 1fr; gap: 5px; align-items: center; margin-top: 5px; font-size: 11px; }
 .compare-sync-row button { padding: 5px 6px; font-size: 10px; }
+.compare-ai-sync-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 6px; margin-top: 10px; }
+.compare-ai-sync-row select { min-width: 0; }
+.compare-ai-btn { color: #eadcff; border-color: #7657a0; background: #352447; }
+.compare-ai-btn:hover { border-color: #9871c9; background: #49315f; }
+.compare-ai-btn:disabled { opacity: .45; cursor: default; }
+.compare-sync-status { min-height: 26px; margin: 6px 0 0; color: #8f8f95; font-size: 10px; line-height: 1.35; white-space: pre-wrap; }
+.compare-sync-status.success { color: #8de3a2; }
+.compare-sync-status.error { color: #ffaaa4; }
 .compare-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
 .comparison-editor {
   position: fixed; inset: 0; z-index: 1100; display: flex; flex-direction: column;
@@ -1042,6 +1050,7 @@ body.timeline-trimming * {
 .compare-pane-scrubber { position: absolute; z-index: 3; left: 10px; right: 10px; bottom: 8px; width: calc(100% - 20px); accent-color: #ff9f0a; }
 .comparison-controls { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 8px; padding: 5px 8px; border-radius: 6px; background: #252527; }
 .comparison-controls button { padding: 4px 8px; font-size: 10px; }
+.comparison-controls .compare-sync-mode { max-width: 120px; height: 25px; padding: 2px 5px; color: #eee; background: #29292c; border: 1px solid #49494d; border-radius: 5px; font-size: 10px; }
 .comparison-controls span { font-size: 11px; font-variant-numeric: tabular-nums; }
 .comparison-side-switch { display: flex; gap: 2px; padding: 2px; border-radius: 5px; background: #151517; }
 .comparison-side-switch button.active { color: #111; border-color: #ffb340; background: #ffb340; }

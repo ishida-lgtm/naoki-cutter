@@ -86,6 +86,141 @@ function postMultipartToSurfAnalyzer(endpoint, filePath, fields = {}) {
   });
 }
 
+function postTwoVideosToSurfAnalyzer(endpoint, leftPath, rightPath, fields = {}) {
+  for (const filePath of [leftPath, rightPath]) {
+    if (!filePath || !fs.existsSync(filePath)) {
+      return Promise.reject(new Error('AI同期用の一時動画を作成できませんでした。'));
+    }
+  }
+  const boundary = `----NaokiCutterSync${crypto.randomUUID().replaceAll('-', '')}`;
+  const fieldParts = Object.entries(fields).map(([name, value]) => Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${String(value)}\r\n`
+  ));
+  const files = [{ name: 'left', path: leftPath }, { name: 'right', path: rightPath }];
+  const fileHeaders = files.map((file) => Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${file.name}"; filename="${path.basename(file.path)}"\r\n` +
+    'Content-Type: video/mp4\r\n\r\n'
+  ));
+  const footer = Buffer.from(`--${boundary}--\r\n`);
+  const contentLength = fieldParts.reduce((sum, part) => sum + part.length, 0)
+    + files.reduce((sum, file, index) => sum + fileHeaders[index].length + fs.statSync(file.path).size + 2, 0)
+    + footer.length;
+
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: SURF_ANALYZER_HOST,
+      port: SURF_ANALYZER_PORT,
+      path: endpoint,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': contentLength,
+      },
+      timeout: 10 * 60 * 1000,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let data;
+        try { data = body ? JSON.parse(body) : {}; }
+        catch { data = { detail: body || '解析アプリから不正な応答が返りました' }; }
+        if (response.statusCode >= 200 && response.statusCode < 300) resolve(data);
+        else reject(new Error(data.detail || `解析アプリのエラー (${response.statusCode})`));
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('AI同期に時間がかかりすぎたため中止しました。')));
+    request.on('error', (error) => {
+      if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH'].includes(error.code)) {
+        reject(new Error('解析アプリが起動していません。surfing-analyzerでuvicornを起動してください。'));
+      } else {
+        reject(error);
+      }
+    });
+
+    const writeStream = (stream) => new Promise((streamResolve, streamReject) => {
+      stream.on('error', streamReject);
+      stream.on('end', streamResolve);
+      stream.pipe(request, { end: false });
+    });
+    (async () => {
+      try {
+        fieldParts.forEach((part) => request.write(part));
+        for (let index = 0; index < files.length; index += 1) {
+          request.write(fileHeaders[index]);
+          await writeStream(fs.createReadStream(files[index].path));
+          request.write('\r\n');
+        }
+        request.end(footer);
+      } catch (error) {
+        request.destroy(error);
+      }
+    })();
+  });
+}
+
+function createSyncProxy(source, outputPath) {
+  const trimStart = Math.max(0, Number(source.trimStart) || 0);
+  const trimEnd = Math.max(trimStart, Number(source.trimEnd) || trimStart);
+  const currentStart = Math.max(trimStart, Math.min(trimEnd, Number(source.start) || trimStart));
+  const fullDuration = trimEnd - trimStart;
+  const searchStart = fullDuration <= 60 ? trimStart : Math.max(trimStart, currentStart - 5);
+  const searchEnd = fullDuration <= 60 ? trimEnd : Math.min(trimEnd, searchStart + 50);
+  const duration = searchEnd - searchStart;
+  if (duration < 1) throw new Error('AI同期する範囲が短すぎます。');
+  const zoom = Math.max(1, Math.min(6, Number(source.zoom) || 1));
+  const panX = Math.max(0, Math.min(1, Number(source.syncPanX) || 0.5));
+  const panY = Math.max(0, Math.min(1, Number(source.syncPanY) || 0.5));
+  const crop = zoom > 1.001
+    ? `crop=w='iw/${zoom}':h='ih/${zoom}':x='clip(iw*${panX}-ow/2,0,iw-ow)':y='clip(ih*${panY}-oh/2,0,ih-oh)',`
+    : '';
+  const result = spawnSync(FFMPEG, [
+    '-y', '-v', 'error', '-ss', String(searchStart), '-t', String(duration), '-i', source.path,
+    '-an', '-vf', `${crop}fps=6,scale=640:-2`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outputPath,
+  ], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: 5 * 60 * 1000 });
+  if (result.error || result.status !== 0 || !fs.existsSync(outputPath)) {
+    throw new Error(`AI同期用の動画を準備できませんでした。${String(result.stderr || '').slice(-500)}`);
+  }
+  return { searchStart, searchEnd, duration };
+}
+
+ipcMain.handle('auto-sync-comparison', async (event, payload) => {
+  const allowedModes = new Set(['takeoff_start', 'hands_down', 'standing']);
+  if (!payload?.left?.path || !payload?.right?.path || !allowedModes.has(payload.mode)) {
+    throw new Error('AI同期の設定が正しくありません。');
+  }
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-sync-'));
+  const leftProxy = path.join(tempDir, 'left.mp4');
+  const rightProxy = path.join(tempDir, 'right.mp4');
+  try {
+    const leftRange = createSyncProxy(payload.left, leftProxy);
+    const rightRange = createSyncProxy(payload.right, rightProxy);
+    const result = await postTwoVideosToSurfAnalyzer('/api/sync/takeoff', leftProxy, rightProxy, {
+      mode: payload.mode,
+    });
+    if (!result.left?.detected || !result.right?.detected) {
+      const details = [
+        !result.left?.detected ? `左／上: ${result.left?.description || '検出できませんでした'}` : '',
+        !result.right?.detected ? `右／下: ${result.right?.description || '検出できませんでした'}` : '',
+      ].filter(Boolean).join('\n');
+      throw new Error(`テイクオフを自動検出できませんでした。\n${details}`);
+    }
+    return {
+      eventLabel: result.event_label,
+      engine: result.engine,
+      leftTime: leftRange.searchStart + Number(result.left.timestamp),
+      rightTime: rightRange.searchStart + Number(result.right.timestamp),
+      leftConfidence: Number(result.left.confidence) || 0,
+      rightConfidence: Number(result.right.confidence) || 0,
+      leftRange,
+      rightRange,
+    };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 ipcMain.handle('analyze-exported-video', async (event, filePath) => {
   const result = await postMultipartToSurfAnalyzer('/api/analyze', filePath);
   // Skeleton frame images are large and the Cutter confirmation view only

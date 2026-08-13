@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   probeInfo: (filePath) => ipcRenderer.invoke('probe-info', filePath),
   exportVideo: (payload) => ipcRenderer.invoke('export-video', payload),
   exportComparison: (payload) => ipcRenderer.invoke('export-comparison', payload),
+  autoSyncComparison: (payload) => ipcRenderer.invoke('auto-sync-comparison', payload),
   analyzeExportedVideo: (filePath) => ipcRenderer.invoke('analyze-exported-video', filePath),
   saveExportedAsReference: (payload) => ipcRenderer.invoke('save-exported-as-reference', payload),
   cancelExport: () => ipcRenderer.invoke('cancel-export'),

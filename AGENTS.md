@@ -108,6 +108,31 @@ preview height cap from 38% to 68% of the window. It must not reload media,
 seek, or change edit state; switching back restores the normal two-column
 layout. The preference is stored as `largePreview` in renderer localStorage.
 
+**Local AI comparison sync.** The two-screen panel and full-window comparison
+controls both offer `AIでタイミングを揃える`, with anchors for takeoff start,
+hands touching the board, or first standing frame. This is non-destructive: it
+changes only `compareStartA`/`compareStartB`, marks both inputs edited, and
+leaves source media, trims, keyframes, and clips untouched. The old ±1-frame
+buttons remain the final manual adjustment path.
+
+`main.js` makes at most a 50-second, 640px/6fps/no-audio proxy for each side in
+the Electron temp directory. A clip of 60 seconds or less uses its complete
+trimmed range; longer clips search from five seconds before the current
+comparison start. Static/effective zoom and pan at the current start are
+applied to the proxy so a centered, enlarged surfer is easier to detect. Both
+proxies are streamed over localhost multipart IPC to
+`POST http://127.0.0.1:8000/api/sync/takeoff` and always deleted afterward.
+The original videos are never copied, modified, or sent outside the Mac.
+
+The additive endpoint is implemented in
+`/Users/ishidanaoki/surfing-analyzer/backend/main.py`. It first uses the
+existing local MediaPipe Pose model to find the pop-up posture transition. If
+the surfer is too small for a skeleton, it may use a lower-confidence central
+motion-change fallback; weak/ambiguous motion returns `detected: false` so the
+app does not move either start time. The backend must be running with the same
+uvicorn command documented below. This endpoint does not call Claude and does
+not require video frames to leave localhost.
+
 ## Stack
 
 - Electron 32, **no asar** (`electron-packager` without asar packing) — this

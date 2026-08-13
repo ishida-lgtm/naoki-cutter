@@ -19,6 +19,7 @@ const waveformByPath = new Map();
 const waveformLoads = new Map();
 let recordingMode = false;
 let comparisonMode = false;
+let comparisonSyncing = false;
 let largePreview = localStorage.getItem('largePreview') === 'true';
 let lastExportedPath = localStorage.getItem('lastExportedPath') || null;
 let analysisInProgress = false;
@@ -93,6 +94,11 @@ const compareABackBtn = document.getElementById('compareABackBtn');
 const compareAForwardBtn = document.getElementById('compareAForwardBtn');
 const compareBBackBtn = document.getElementById('compareBBackBtn');
 const compareBForwardBtn = document.getElementById('compareBForwardBtn');
+const compareSyncMode = document.getElementById('compareSyncMode');
+const compareSyncModeEditor = document.getElementById('compareSyncModeEditor');
+const compareAutoSyncBtn = document.getElementById('compareAutoSyncBtn');
+const compareAutoSyncEditorBtn = document.getElementById('compareAutoSyncEditorBtn');
+const compareSyncStatus = document.getElementById('compareSyncStatus');
 const compareAudioSelect = document.getElementById('compareAudioSelect');
 const comparePreviewBtn = document.getElementById('comparePreviewBtn');
 const compareExportBtn = document.getElementById('compareExportBtn');
@@ -765,6 +771,8 @@ function renderComparisonControls() {
   }
   comparePreviewBtn.disabled = !valid || exporting;
   compareExportBtn.disabled = !valid || exporting;
+  compareAutoSyncBtn.disabled = !valid || exporting || comparisonSyncing;
+  compareAutoSyncEditorBtn.disabled = !valid || exporting || comparisonSyncing;
   comparePreviewBtn.textContent = comparisonMode ? '1画面編集へ戻る' : '2画面で編集';
   if (a && !compareStartA.dataset.edited) compareStartA.value = a.trimStart.toFixed(3);
   if (b && !compareStartB.dataset.edited) compareStartB.value = b.trimStart.toFixed(3);
@@ -903,6 +911,58 @@ compareABackBtn.addEventListener('click', () => nudgeComparisonStart(compareStar
 compareAForwardBtn.addEventListener('click', () => nudgeComparisonStart(compareStartA, comparisonClip(compareClipASelect), 1));
 compareBBackBtn.addEventListener('click', () => nudgeComparisonStart(compareStartB, comparisonClip(compareClipBSelect), -1));
 compareBForwardBtn.addEventListener('click', () => nudgeComparisonStart(compareStartB, comparisonClip(compareClipBSelect), 1));
+compareSyncMode.addEventListener('change', () => { compareSyncModeEditor.value = compareSyncMode.value; });
+compareSyncModeEditor.addEventListener('change', () => { compareSyncMode.value = compareSyncModeEditor.value; });
+
+async function autoSyncComparison() {
+  if (comparisonSyncing) return;
+  const left = comparisonClip(compareClipASelect);
+  const right = comparisonClip(compareClipBSelect);
+  if (!left || !right || left.id === right.id) return;
+  comparisonSyncing = true;
+  compareSyncStatus.className = 'compare-sync-status';
+  compareSyncStatus.textContent = '姿勢AIでテイクオフを解析しています…（動画はMacの外へ送信しません）';
+  compareAutoSyncBtn.textContent = '解析中…';
+  compareAutoSyncEditorBtn.textContent = '解析中…';
+  renderComparisonControls();
+  try {
+    const leftPan = getEffectivePan(left, Math.max(0, clampComparisonStart(compareStartA, left) - left.trimStart));
+    const rightPan = getEffectivePan(right, Math.max(0, clampComparisonStart(compareStartB, right) - right.trimStart));
+    const result = await window.api.autoSyncComparison({
+      mode: compareSyncMode.value,
+      left: {
+        path: left.path, trimStart: left.trimStart, trimEnd: left.trimEnd,
+        start: clampComparisonStart(compareStartA, left), zoom: left.zoom,
+        syncPanX: leftPan.x, syncPanY: leftPan.y,
+      },
+      right: {
+        path: right.path, trimStart: right.trimStart, trimEnd: right.trimEnd,
+        start: clampComparisonStart(compareStartB, right), zoom: right.zoom,
+        syncPanX: rightPan.x, syncPanY: rightPan.y,
+      },
+    });
+    compareStartA.value = Math.max(left.trimStart, Math.min(left.trimEnd - 0.1, result.leftTime)).toFixed(3);
+    compareStartB.value = Math.max(right.trimStart, Math.min(right.trimEnd - 0.1, result.rightTime)).toFixed(3);
+    compareStartA.dataset.edited = 'true';
+    compareStartB.dataset.edited = 'true';
+    const confidence = Math.round(Math.min(result.leftConfidence, result.rightConfidence) * 100);
+    compareSyncStatus.className = 'compare-sync-status success';
+    compareSyncStatus.textContent = `${result.eventLabel}で揃えました（AI確信度 ${confidence}%）。必要なら±1コマで微調整してください。`;
+    if (comparisonMode) restartComparisonPreview();
+    statusText.textContent = `2画面を${result.eventLabel}で自動同期しました`;
+  } catch (error) {
+    compareSyncStatus.className = 'compare-sync-status error';
+    compareSyncStatus.textContent = error.message;
+  } finally {
+    comparisonSyncing = false;
+    compareAutoSyncBtn.textContent = 'AIでタイミングを揃える';
+    compareAutoSyncEditorBtn.textContent = 'AIで揃える';
+    renderComparisonControls();
+  }
+}
+
+compareAutoSyncBtn.addEventListener('click', autoSyncComparison);
+compareAutoSyncEditorBtn.addEventListener('click', autoSyncComparison);
 comparePreviewBtn.addEventListener('click', openComparisonPreview);
 compareCloseBtn.addEventListener('click', closeComparisonPreview);
 comparePlayBtn.addEventListener('click', toggleComparisonPlayback);
