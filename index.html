@@ -11,6 +11,11 @@
       <h1>Naoki Cutter</h1>
       <p class="subtitle">つなぐ・切る・トランジション・4K書き出し専用</p>
     </div>
+    <nav class="workspace-tabs" aria-label="作業画面">
+      <button id="editWorkspaceBtn" class="active" type="button">編集</button>
+      <button id="formWorkspaceBtn" type="button">フォーム解析</button>
+      <button id="trainingWorkspaceBtn" type="button">学習データ</button>
+    </nav>
     <div class="header-media-actions">
       <button id="previewSizeBtn" class="preview-size-btn" type="button" aria-pressed="false" title="再生画面の大きさを切り替える">⛶ 再生画面を大きく</button>
       <button id="recordModeBtn" class="record-mode-btn" disabled title="音声付き画面収録モード（R）">● 音声付き画面収録</button>
@@ -30,7 +35,7 @@
     </div>
   </div>
 
-  <main>
+  <main id="editWorkspace" class="workspace-view">
     <section class="clip-panel">
       <div class="preview-wrap">
         <div id="previewVideoBox" class="preview-video-box">
@@ -278,6 +283,65 @@
         <button id="clearCacheBtn">🗑️ アプリのキャッシュを削除</button>
         <span class="cache-hint">（書き出し済み動画は消えません）</span>
       </div>
+    </section>
+  </main>
+
+  <main id="formWorkspace" class="workspace-view form-workspace hidden">
+    <section class="form-preview-panel">
+      <div class="form-title-row">
+        <div>
+          <h2>サーフィンフォーム解析</h2>
+          <p>編集に追加した元動画を直接解析します。先に書き出す必要はありません。</p>
+        </div>
+        <select id="formSourceSelect" aria-label="解析する動画"><option value="">動画を選択</option></select>
+      </div>
+      <div class="form-video-wrap">
+        <video id="formVideo" playsinline controls></video>
+        <div id="formVideoEmpty">編集画面で動画を追加してください</div>
+      </div>
+      <div class="form-analysis-actions">
+        <button id="formLocalAnalyzeBtn" class="form-local-btn" disabled>Mac内AIで動作を検出</button>
+        <button id="formCloudAnalyzeBtn" class="form-cloud-btn" disabled>クラウドで詳しく解析</button>
+      </div>
+      <p class="form-privacy-note"><b>Mac内AI：</b>動画は外部へ送りません。　<b>クラウド解析：</b>低解像度の解析用動画をsurfing-analyzer経由でClaudeへ送信します。</p>
+      <div id="formAnalysisStatus" class="form-analysis-status"></div>
+      <div id="formAnalysisResult" class="form-analysis-result hidden"></div>
+    </section>
+
+    <aside class="form-label-panel">
+      <h2>正解データ</h2>
+      <p class="project-hint">AI候補を確認・修正して保存すると、今後の比較・解析データとして蓄積されます。</p>
+      <label>キャッチのパドル開始
+        <div class="form-time-row"><input id="formCatchStart" type="number" min="0" step="0.01" /><button data-form-time="catch">現在位置</button></div>
+      </label>
+      <label>手をついてテイクオフ開始
+        <div class="form-time-row"><input id="formTakeoffStart" type="number" min="0" step="0.01" /><button data-form-time="start">現在位置</button></div>
+      </label>
+      <label>手が離れてテイクオフ終了
+        <div class="form-time-row"><input id="formTakeoffEnd" type="number" min="0" step="0.01" /><button data-form-time="end">現在位置</button></div>
+      </label>
+      <div id="formEventBar" class="form-event-bar">
+        <span class="travel">移動パドル</span><span class="catch">キャッチ</span><span class="takeoff">テイクオフ</span>
+      </div>
+      <button id="formSaveTrainingBtn" class="primary" disabled>確認済みデータとして保存</button>
+      <p id="formSaveStatus" class="status-text"></p>
+    </aside>
+  </main>
+
+  <main id="trainingWorkspace" class="workspace-view training-workspace hidden">
+    <section class="training-library">
+      <div class="training-title-row">
+        <div><h2>サーフィン動作の学習データ</h2><p>動画本体は保存せず、確認した時刻と動作名だけをMac内に蓄積します。</p></div>
+        <button id="refreshTrainingBtn">再読み込み</button>
+      </div>
+      <div class="training-definitions">
+        <div><b>移動パドル</b><span>沖へ移動するための通常のパドル</span></div>
+        <div><b>キャッチのパドル</b><span>波をつかみテイクオフへ入る直前のパドル</span></div>
+        <div><b>テイクオフ開始</b><span>手をボードについた瞬間</span></div>
+        <div><b>テイクオフ終了</b><span>手がボードから離れた瞬間</span></div>
+      </div>
+      <div id="trainingExampleList" class="training-example-list"></div>
+      <p id="trainingEmpty" class="training-empty">正解データはまだありません。</p>
     </section>
   </main>
 

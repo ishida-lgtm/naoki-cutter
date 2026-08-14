@@ -478,6 +478,39 @@ reference `preview` fields are removed before the result crosses IPC.
 modal. Keep the endpoint host fixed to localhost unless the trust and IPC
 model is deliberately revisited.
 
+### Integrated form-analysis workspace and verified labels
+
+The user-facing app is unified even though analysis remains a separate local
+FastAPI service. The header tabs in `index.html` switch between the normal
+editor, the form-analysis workspace, and the verified training-data library;
+they do not open a second app and do not mutate the editor timeline. The form
+workspace can analyze any unique source path already loaded into the editor,
+so an intermediate export is not required.
+
+Two deliberately different analysis paths are exposed through the existing
+main/preload IPC boundary:
+
+- `analyze-form-local` makes a small temporary proxy and calls
+  `POST /api/form/local`. This uses MediaPipe/motion analysis on the Mac and
+  does not send video outside the machine.
+- `analyze-form-cloud` requires an explicit renderer confirmation, makes the
+  same temporary proxy, and calls the existing `POST /api/analyze` Claude
+  path for detailed scores and comments. Do not remove the disclosure or
+  silently fall back from local to cloud analysis.
+
+User-confirmed labels are stored at
+`<app.getPath('userData')>/ai-training/surfing-event-labels.json`. The schema
+separates `travel_paddle`, `catch_paddle`, and `takeoff`; takeoff starts when
+the hands touch the board and ends when the hands leave it. `main.js` owns all
+reads, atomic writes, validation, and deletion through `list-training-data`,
+`save-training-example`, and `delete-training-example`. Saving stores the
+source identity/path and verified timestamps only: it never copies or deletes
+the source video. Deleting a label example must likewise leave the original
+media untouched. The surfing-analyzer backend reads this same local file at
+`GET /api/training/data`, and `/api/form/local` reports the number of verified
+examples available. These backend additions live in
+`/Users/ishidanaoki/surfing-analyzer/backend/main.py`.
+
 ## Free GitHub Releases updater
 
 The public distribution repository is

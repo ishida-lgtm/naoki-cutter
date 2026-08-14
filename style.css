@@ -20,6 +20,15 @@ header {
 header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
 .subtitle { margin: 2px 0 0; color: #7f7f84; font-size: 10px; }
 .brand { min-width: 0; }
+.workspace-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 7px;
+  background: #151517;
+}
+.workspace-tabs button { padding: 5px 11px; color: #9d9da2; background: transparent; border-color: transparent; box-shadow: none; }
+.workspace-tabs button.active { color: #111; border-color: #ffb340; background: #ffb340; }
 .header-media-actions {
   display: flex;
   align-items: center;
@@ -90,6 +99,7 @@ main {
   display: flex;
   overflow: hidden;
 }
+.workspace-view.hidden { display: none; }
 
 .clip-panel {
   flex: 2;
@@ -111,6 +121,64 @@ body.preview-large .clip-panel {
 }
 body.preview-large .export-panel { display: none; }
 body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
+
+.form-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, .8fr);
+  overflow: hidden;
+}
+.form-preview-panel { min-width: 0; padding: 18px 22px; overflow-y: auto; border-right: 1px solid #333; }
+.form-label-panel { padding: 18px 20px; overflow-y: auto; background: #202022; }
+.form-title-row, .training-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.form-title-row h2, .training-title-row h2 { margin-bottom: 3px; }
+.form-title-row p, .training-title-row p { margin: 0; color: #818187; font-size: 11px; }
+.form-title-row select { min-width: 240px; padding: 7px 9px; color: #fff; background: #29292c; border: 1px solid #48484c; border-radius: 6px; }
+.form-video-wrap { position: relative; width: min(100%, 960px); aspect-ratio: 16 / 9; margin: 16px auto 0; overflow: hidden; border-radius: 8px; background: #000; }
+.form-video-wrap video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+#formVideoEmpty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #69696e; font-size: 13px; pointer-events: none; }
+.form-analysis-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.form-analysis-actions button { min-height: 36px; }
+.form-local-btn { color: #bcebc7; border-color: #39774a; background: #203d28; }
+.form-cloud-btn { color: #d6c8ff; border-color: #654d9a; background: #302545; }
+.form-privacy-note { margin: 8px 0; color: #85858a; font-size: 10px; line-height: 1.45; }
+.form-analysis-status { min-height: 20px; padding: 5px 0; color: #8ecbff; font-size: 11px; white-space: pre-wrap; }
+.form-analysis-status.error { color: #ffaaa4; }
+.form-analysis-result { margin-top: 8px; padding: 12px; border: 1px solid #3c3c40; border-radius: 8px; background: #202023; }
+.form-analysis-result.hidden { display: none; }
+.form-label-panel > label { display: block; margin-top: 14px; color: #cacacd; font-size: 11px; }
+.form-time-row { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin-top: 5px; }
+.form-time-row input { min-width: 0; padding: 7px 8px; color: #fff; background: #29292c; border: 1px solid #48484c; border-radius: 5px; }
+.form-time-row button { padding: 5px 8px; font-size: 10px; }
+.form-event-bar { display: flex; height: 32px; margin-top: 18px; overflow: hidden; border-radius: 6px; background: #2b2b2e; }
+.form-event-bar span { display: flex; min-width: 54px; align-items: center; justify-content: center; padding: 0 6px; color: #111; font-size: 9px; white-space: nowrap; }
+.form-event-bar .travel { flex: 3; background: #5ac8fa; }
+.form-event-bar .catch { flex: 1; background: #ffd60a; }
+.form-event-bar .takeoff { flex: 1.5; background: #ff9f0a; }
+
+.training-workspace { overflow-y: auto; padding: 20px 26px; }
+.training-library { width: min(100%, 1100px); margin: 0 auto; }
+.training-definitions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 18px 0; }
+.training-definitions > div { padding: 11px; border: 1px solid #3c3c40; border-radius: 7px; background: #242427; }
+.training-definitions b, .training-definitions span { display: block; }
+.training-definitions b { margin-bottom: 5px; color: #ffb340; font-size: 12px; }
+.training-definitions span { color: #929297; font-size: 10px; line-height: 1.4; }
+.training-example-list { display: grid; gap: 8px; }
+.training-example { padding: 12px 14px; border: 1px solid #404044; border-radius: 8px; background: #242427; }
+.training-example-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.training-example-header strong { color: #e8e8ea; }
+.training-example-header button { color: #ffaaa4; font-size: 10px; }
+.training-segments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.training-segments span { padding: 4px 7px; border-radius: 4px; color: #ccc; background: #303034; font-size: 10px; }
+.training-empty { color: #747479; text-align: center; padding: 30px; }
+.training-empty.hidden { display: none; }
+
+@media (max-width: 1050px) {
+  .workspace-tabs button { padding-left: 7px; padding-right: 7px; font-size: 10px; }
+  .form-workspace { grid-template-columns: 1fr; overflow-y: auto; }
+  .form-preview-panel, .form-label-panel { overflow: visible; border-right: 0; }
+  .training-definitions { grid-template-columns: repeat(2, 1fr); }
+}
 
 .project-box {
   margin-bottom: 18px;

@@ -21,6 +21,10 @@ let recordingMode = false;
 let comparisonMode = false;
 let comparisonSyncing = false;
 let largePreview = localStorage.getItem('largePreview') === 'true';
+let activeWorkspace = 'edit';
+let trainingData = null;
+let formAnalysisInProgress = false;
+let currentTrainingExampleId = null;
 let lastExportedPath = localStorage.getItem('lastExportedPath') || null;
 let analysisInProgress = false;
 let recordingActive = false;
@@ -130,6 +134,28 @@ const referenceNameInput = document.getElementById('referenceNameInput');
 const referenceDescriptionInput = document.getElementById('referenceDescriptionInput');
 const saveReferenceBtn = document.getElementById('saveReferenceBtn');
 const referenceSaveStatus = document.getElementById('referenceSaveStatus');
+const editWorkspaceBtn = document.getElementById('editWorkspaceBtn');
+const formWorkspaceBtn = document.getElementById('formWorkspaceBtn');
+const trainingWorkspaceBtn = document.getElementById('trainingWorkspaceBtn');
+const editWorkspace = document.getElementById('editWorkspace');
+const formWorkspace = document.getElementById('formWorkspace');
+const trainingWorkspace = document.getElementById('trainingWorkspace');
+const formSourceSelect = document.getElementById('formSourceSelect');
+const formVideo = document.getElementById('formVideo');
+const formVideoEmpty = document.getElementById('formVideoEmpty');
+const formLocalAnalyzeBtn = document.getElementById('formLocalAnalyzeBtn');
+const formCloudAnalyzeBtn = document.getElementById('formCloudAnalyzeBtn');
+const formAnalysisStatus = document.getElementById('formAnalysisStatus');
+const formAnalysisResult = document.getElementById('formAnalysisResult');
+const formCatchStart = document.getElementById('formCatchStart');
+const formTakeoffStart = document.getElementById('formTakeoffStart');
+const formTakeoffEnd = document.getElementById('formTakeoffEnd');
+const formEventBar = document.getElementById('formEventBar');
+const formSaveTrainingBtn = document.getElementById('formSaveTrainingBtn');
+const formSaveStatus = document.getElementById('formSaveStatus');
+const trainingExampleList = document.getElementById('trainingExampleList');
+const trainingEmpty = document.getElementById('trainingEmpty');
+const refreshTrainingBtn = document.getElementById('refreshTrainingBtn');
 const updateBanner = document.getElementById('updateBanner');
 const updateTitle = document.getElementById('updateTitle');
 const updateMessage = document.getElementById('updateMessage');
@@ -247,6 +273,311 @@ function fmtTime(sec) {
 function selectedClip() {
   return clips.find((c) => c.id === selectedClipId) || null;
 }
+
+function uniqueFormSources() {
+  const byPath = new Map();
+  clips.forEach((clip) => {
+    if (!byPath.has(clip.path)) byPath.set(clip.path, clip);
+  });
+  return [...byPath.values()];
+}
+
+function formSourceClip() {
+  return uniqueFormSources().find((clip) => clip.path === formSourceSelect.value) || null;
+}
+
+function refreshFormSources(preferredPath = null) {
+  const previous = preferredPath || formSourceSelect.value;
+  const sources = uniqueFormSources();
+  formSourceSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = sources.length ? '動画を選択' : '編集画面で動画を追加してください';
+  formSourceSelect.appendChild(placeholder);
+  sources.forEach((clip, index) => {
+    const option = document.createElement('option');
+    option.value = clip.path;
+    option.textContent = `${index + 1}. ${clip.name}`;
+    formSourceSelect.appendChild(option);
+  });
+  if (sources.some((clip) => clip.path === previous)) formSourceSelect.value = previous;
+  else if (sources.length === 1) formSourceSelect.value = sources[0].path;
+  updateFormSource();
+}
+
+function matchingTrainingExample(clip) {
+  if (!clip || !trainingData?.examples) return null;
+  return trainingData.examples.find((example) => example.source_path === clip.path)
+    || trainingData.examples.find((example) => example.source_name === clip.name)
+    || null;
+}
+
+function exampleSegment(example, event) {
+  return (example?.segments || []).find((segment) => segment.event === event) || null;
+}
+
+function exampleLabel(example, event) {
+  return (example?.labels || []).find((label) => label.event === event) || null;
+}
+
+function updateFormEventBar() {
+  const clip = formSourceClip();
+  const duration = Number(clip?.duration) || 0;
+  const catchStart = Number(formCatchStart.value);
+  const takeoffStart = Number(formTakeoffStart.value);
+  const takeoffEnd = Number(formTakeoffEnd.value);
+  const spans = formEventBar.querySelectorAll('span');
+  if (!duration || !Number.isFinite(catchStart) || !Number.isFinite(takeoffStart) || !Number.isFinite(takeoffEnd)) {
+    spans.forEach((span) => { span.style.flexGrow = '1'; });
+    return;
+  }
+  spans[0].style.flexGrow = String(Math.max(.1, catchStart));
+  spans[1].style.flexGrow = String(Math.max(.1, takeoffStart - catchStart));
+  spans[2].style.flexGrow = String(Math.max(.1, takeoffEnd - takeoffStart));
+}
+
+function loadTrainingValues(example) {
+  currentTrainingExampleId = example?.id || null;
+  const catchSegment = exampleSegment(example, 'catch_paddle');
+  const takeoffSegment = exampleSegment(example, 'takeoff');
+  const takeoffStartLabel = exampleLabel(example, 'takeoff_start_hands_down');
+  const takeoffEndLabel = exampleLabel(example, 'takeoff_end_hands_release');
+  formCatchStart.value = catchSegment ? Number(catchSegment.start_seconds).toFixed(2) : '';
+  formTakeoffStart.value = takeoffSegment
+    ? Number(takeoffSegment.start_seconds).toFixed(2)
+    : takeoffStartLabel ? Number(takeoffStartLabel.time_seconds).toFixed(2) : '';
+  formTakeoffEnd.value = takeoffSegment
+    ? Number(takeoffSegment.end_seconds).toFixed(2)
+    : takeoffEndLabel ? Number(takeoffEndLabel.time_seconds).toFixed(2) : '';
+  formSaveStatus.textContent = example ? '保存済みの正解データを読み込みました' : '';
+  updateFormEventBar();
+}
+
+function updateFormSource() {
+  const clip = formSourceClip();
+  const enabled = Boolean(clip) && !formAnalysisInProgress;
+  formLocalAnalyzeBtn.disabled = !enabled;
+  formCloudAnalyzeBtn.disabled = !enabled;
+  formSaveTrainingBtn.disabled = !enabled;
+  if (!clip) {
+    formVideo.pause();
+    formVideo.removeAttribute('src');
+    formVideo.load();
+    formVideoEmpty.style.display = 'flex';
+    loadTrainingValues(null);
+    return;
+  }
+  if (!formVideo.src || decodeURI(formVideo.src).replace(/^file:\/\//, '') !== clip.path) {
+    formVideo.src = 'file://' + encodeURI(clip.path);
+    formVideo.currentTime = Math.max(0, clip.trimStart || 0);
+  }
+  formVideoEmpty.style.display = 'none';
+  loadTrainingValues(matchingTrainingExample(clip));
+}
+
+function switchWorkspace(name) {
+  activeWorkspace = name;
+  const views = { edit: editWorkspace, form: formWorkspace, training: trainingWorkspace };
+  Object.entries(views).forEach(([key, view]) => view.classList.toggle('hidden', key !== name));
+  editWorkspaceBtn.classList.toggle('active', name === 'edit');
+  formWorkspaceBtn.classList.toggle('active', name === 'form');
+  trainingWorkspaceBtn.classList.toggle('active', name === 'training');
+  if (name === 'form') {
+    refreshFormSources(selectedClip()?.path || formSourceSelect.value);
+    refreshTrainingData();
+  }
+  if (name === 'training') refreshTrainingData();
+}
+
+editWorkspaceBtn.addEventListener('click', () => switchWorkspace('edit'));
+formWorkspaceBtn.addEventListener('click', () => switchWorkspace('form'));
+trainingWorkspaceBtn.addEventListener('click', () => switchWorkspace('training'));
+formSourceSelect.addEventListener('change', updateFormSource);
+[formCatchStart, formTakeoffStart, formTakeoffEnd].forEach((input) => input.addEventListener('input', updateFormEventBar));
+document.querySelectorAll('[data-form-time]').forEach((button) => button.addEventListener('click', () => {
+  const target = button.dataset.formTime === 'catch' ? formCatchStart
+    : button.dataset.formTime === 'start' ? formTakeoffStart : formTakeoffEnd;
+  target.value = (Number(formVideo.currentTime) || 0).toFixed(2);
+  updateFormEventBar();
+}));
+
+function formSourcePayload() {
+  const clip = formSourceClip();
+  if (!clip) return null;
+  const currentTime = Math.max(0, Number(formVideo.currentTime) || clip.trimStart || 0);
+  const pan = getEffectivePan(clip, Math.max(0, currentTime - (clip.trimStart || 0)));
+  return {
+    path: clip.path,
+    trimStart: 0,
+    trimEnd: clip.duration,
+    start: currentTime,
+    zoom: clip.zoom,
+    syncPanX: pan.x,
+    syncPanY: pan.y,
+  };
+}
+
+function setFormAnalysisBusy(busy) {
+  formAnalysisInProgress = busy;
+  const enabled = Boolean(formSourceClip()) && !busy;
+  formLocalAnalyzeBtn.disabled = !enabled;
+  formCloudAnalyzeBtn.disabled = !enabled;
+  formSaveTrainingBtn.disabled = !enabled;
+  formLocalAnalyzeBtn.textContent = busy ? '解析中…' : 'Mac内AIで動作を検出';
+}
+
+function renderLocalFormResult(result) {
+  formAnalysisResult.innerHTML = '';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Mac内AIの候補';
+  const list = document.createElement('ul');
+  list.className = 'analysis-scenes';
+  const candidates = [
+    ['テイクオフ開始', result.takeoff_start],
+    ['テイクオフ終了', result.takeoff_end],
+  ];
+  candidates.forEach(([label, candidate]) => {
+    const item = document.createElement('li');
+    if (candidate?.detected) {
+      const confidence = Math.round((Number(candidate.confidence) || 0) * 100);
+      item.textContent = `${label}: ${Number(candidate.timestamp).toFixed(2)}秒（確信度 ${confidence}%）`;
+    } else {
+      item.textContent = `${label}: 検出できませんでした。動画を見て「現在位置」で設定してください。`;
+    }
+    list.appendChild(item);
+  });
+  const note = document.createElement('p');
+  note.textContent = '候補は自動保存されません。映像を確認・修正してから「確認済みデータとして保存」を押してください。';
+  formAnalysisResult.append(heading, list, note);
+  formAnalysisResult.classList.remove('hidden');
+}
+
+async function refreshTrainingData() {
+  try {
+    trainingData = await window.api.listTrainingData();
+    renderTrainingExamples();
+    const clip = formSourceClip();
+    if (clip) loadTrainingValues(matchingTrainingExample(clip));
+  } catch (error) {
+    trainingExampleList.innerHTML = '';
+    trainingEmpty.textContent = `学習データを読み込めません: ${error.message}`;
+    trainingEmpty.classList.remove('hidden');
+  }
+}
+
+function renderTrainingExamples() {
+  trainingExampleList.innerHTML = '';
+  const examples = Array.isArray(trainingData?.examples) ? trainingData.examples : [];
+  trainingEmpty.textContent = '正解データはまだありません。';
+  trainingEmpty.classList.toggle('hidden', examples.length > 0);
+  examples.forEach((example) => {
+    const catchSegment = exampleSegment(example, 'catch_paddle');
+    const takeoffSegment = exampleSegment(example, 'takeoff');
+    const card = document.createElement('article');
+    card.className = 'training-example';
+    const body = document.createElement('div');
+    const header = document.createElement('div');
+    header.className = 'training-example-header';
+    const title = document.createElement('strong');
+    title.textContent = example.source_name || '名称なし';
+    const times = document.createElement('p');
+    const takeoffStartLabel = exampleLabel(example, 'takeoff_start_hands_down');
+    const takeoffEndLabel = exampleLabel(example, 'takeoff_end_hands_release');
+    const catchText = catchSegment
+      ? `${Number(catchSegment.start_seconds).toFixed(2)}–${Number(catchSegment.end_seconds).toFixed(2)}秒`
+      : '未登録';
+    const takeoffStart = takeoffSegment?.start_seconds ?? takeoffStartLabel?.time_seconds;
+    const takeoffEnd = takeoffSegment?.end_seconds ?? takeoffEndLabel?.time_seconds;
+    const takeoffText = Number.isFinite(Number(takeoffStart)) && Number.isFinite(Number(takeoffEnd))
+      ? `${Number(takeoffStart).toFixed(2)}–${Number(takeoffEnd).toFixed(2)}秒`
+      : '未登録';
+    times.textContent = `キャッチ ${catchText}　／　テイクオフ ${takeoffText}`;
+    const privacy = document.createElement('small');
+    privacy.textContent = '動画本体は保存していません';
+    header.appendChild(title);
+    body.append(header, times, privacy);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '削除';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm(`${example.source_name || 'このデータ'}の正解データを削除しますか？\n元動画は削除されません。`)) return;
+      try {
+        await window.api.deleteTrainingExample(example.id);
+        await refreshTrainingData();
+      } catch (error) {
+        trainingEmpty.textContent = `削除できません: ${error.message}`;
+        trainingEmpty.classList.remove('hidden');
+      }
+    });
+    header.appendChild(remove);
+    card.appendChild(body);
+    trainingExampleList.appendChild(card);
+  });
+}
+
+formLocalAnalyzeBtn.addEventListener('click', async () => {
+  const payload = formSourcePayload();
+  if (!payload || formAnalysisInProgress) return;
+  setFormAnalysisBusy(true);
+  formAnalysisStatus.textContent = '動画をMac内だけで解析しています…';
+  formAnalysisResult.classList.add('hidden');
+  try {
+    const result = await window.api.analyzeFormLocal(payload);
+    if (result.takeoff_start?.detected) formTakeoffStart.value = Number(result.takeoff_start.timestamp).toFixed(2);
+    if (result.takeoff_end?.detected) formTakeoffEnd.value = Number(result.takeoff_end.timestamp).toFixed(2);
+    updateFormEventBar();
+    renderLocalFormResult(result);
+    formAnalysisStatus.textContent = '候補を表示しました。映像を見て時刻を確認してください。';
+  } catch (error) {
+    formAnalysisStatus.textContent = `ローカル解析エラー: ${error.message}`;
+  } finally {
+    setFormAnalysisBusy(false);
+  }
+});
+
+formCloudAnalyzeBtn.addEventListener('click', async () => {
+  const payload = formSourcePayload();
+  if (!payload || formAnalysisInProgress) return;
+  if (!window.confirm('低解像度の解析用動画をsurfing-analyzer経由でClaudeへ送信します。\nクラウドで詳しく解析しますか？')) return;
+  setFormAnalysisBusy(true);
+  formAnalysisStatus.textContent = 'クラウドで詳しく解析しています…';
+  formAnalysisResult.classList.add('hidden');
+  try {
+    const result = await window.api.analyzeFormCloud(payload);
+    renderAnalysisResult(result, formAnalysisResult);
+    formAnalysisResult.classList.remove('hidden');
+    formAnalysisStatus.textContent = 'クラウド解析が完了しました。';
+  } catch (error) {
+    formAnalysisStatus.textContent = `クラウド解析エラー: ${error.message}`;
+  } finally {
+    setFormAnalysisBusy(false);
+  }
+});
+
+formSaveTrainingBtn.addEventListener('click', async () => {
+  const clip = formSourceClip();
+  if (!clip) return;
+  formSaveTrainingBtn.disabled = true;
+  formSaveStatus.textContent = '保存しています…';
+  try {
+    await window.api.saveTrainingExample({
+      id: currentTrainingExampleId,
+      sourcePath: clip.path,
+      duration: clip.duration,
+      catchStart: formCatchStart.value,
+      takeoffStart: formTakeoffStart.value,
+      takeoffEnd: formTakeoffEnd.value,
+    });
+    await refreshTrainingData();
+    formSaveStatus.textContent = '確認済みデータとして保存しました（元動画はコピーしていません）';
+  } catch (error) {
+    formSaveStatus.textContent = `保存できません: ${error.message}`;
+  } finally {
+    updateFormSource();
+  }
+});
+
+refreshTrainingBtn.addEventListener('click', refreshTrainingData);
 
 async function ensureWaveform(filePath) {
   if (!filePath || waveformByPath.has(filePath)) return waveformByPath.get(filePath) || [];
@@ -3395,8 +3726,8 @@ function addAnalysisMetric(container, label, value) {
   container.appendChild(item);
 }
 
-function renderAnalysisResult(result) {
-  analysisResult.innerHTML = '';
+function renderAnalysisResult(result, container = analysisResult) {
+  container.innerHTML = '';
   const summary = document.createElement('div');
   summary.className = 'analysis-summary';
   addAnalysisMetric(summary, '総合スコア', result.total_score == null ? '—' : `${result.total_score}点`);
@@ -3406,11 +3737,11 @@ function renderAnalysisResult(result) {
   addAnalysisMetric(summary, '体のバランス', result.body_balance?.score == null ? '—' : `${result.body_balance.score}点`);
   addAnalysisMetric(summary, '目線・手', result.hands_eyes?.score == null ? '—' : `${result.hands_eyes.score}点`);
   addAnalysisMetric(summary, '足のスタンス', result.foot_stance?.score == null ? '—' : `${result.foot_stance.score}点`);
-  analysisResult.appendChild(summary);
+  container.appendChild(summary);
 
   const heading = document.createElement('h3');
   heading.textContent = 'シーン判定';
-  analysisResult.appendChild(heading);
+  container.appendChild(heading);
   const scenes = document.createElement('ul');
   scenes.className = 'analysis-scenes';
   (Array.isArray(result.frames) ? result.frames : []).forEach((frame) => {
@@ -3427,12 +3758,12 @@ function renderAnalysisResult(result) {
     item.textContent = 'シーン判定が返されませんでした';
     scenes.appendChild(item);
   }
-  analysisResult.appendChild(scenes);
+  container.appendChild(scenes);
 
   if (result.overall_comment) {
     const comment = document.createElement('p');
     comment.textContent = result.overall_comment;
-    analysisResult.appendChild(comment);
+    container.appendChild(comment);
   }
   if (Array.isArray(result.improvement_points) && result.improvement_points.length) {
     const title = document.createElement('h3');
@@ -3444,7 +3775,7 @@ function renderAnalysisResult(result) {
       item.textContent = point;
       list.appendChild(item);
     });
-    analysisResult.append(title, list);
+    container.append(title, list);
   }
 }
 

@@ -221,6 +221,168 @@ ipcMain.handle('auto-sync-comparison', async (event, payload) => {
   }
 });
 
+function trainingDataDir() {
+  return path.join(app.getPath('userData'), 'ai-training');
+}
+
+function trainingDataPath() {
+  return path.join(trainingDataDir(), 'surfing-event-labels.json');
+}
+
+function emptyTrainingData() {
+  return {
+    schema_version: 1,
+    updated_at: new Date().toISOString(),
+    privacy: {
+      stores_video: false,
+      local_only: true,
+      description: '元動画は保存せず、ユーザーが確認した時刻と動作ラベルだけを保存する',
+    },
+    definitions: {
+      travel_paddle: '沖へ移動するための通常のパドル',
+      catch_paddle: '波をつかんでテイクオフへ入る直前の強いパドル',
+      takeoff_start_hands_down: '手をボードについてテイクオフ動作を開始した瞬間',
+      takeoff_end_hands_release: '手がボードから離れてテイクオフ動作が終了した瞬間',
+    },
+    examples: [],
+  };
+}
+
+function readTrainingData() {
+  fs.mkdirSync(trainingDataDir(), { recursive: true });
+  const filePath = trainingDataPath();
+  if (!fs.existsSync(filePath)) {
+    const initial = emptyTrainingData();
+    fs.writeFileSync(filePath, JSON.stringify(initial, null, 2), 'utf8');
+    return initial;
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!data || !Array.isArray(data.examples)) throw new Error('examples missing');
+    let migrated = false;
+    const examples = data.examples.map((example) => {
+      if (example.id) return example;
+      migrated = true;
+      return { ...example, id: crypto.randomUUID() };
+    });
+    const normalized = { ...emptyTrainingData(), ...data, examples };
+    if (migrated) writeTrainingData(normalized);
+    return normalized;
+  } catch {
+    throw new Error('AI学習データが壊れています。ファイルを確認してください。');
+  }
+}
+
+function writeTrainingData(data) {
+  data.updated_at = new Date().toISOString();
+  fs.mkdirSync(trainingDataDir(), { recursive: true });
+  const filePath = trainingDataPath();
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tempPath, filePath);
+}
+
+function safeTrainingTime(value, duration, label) {
+  if (value === '' || value === null || value === undefined) {
+    throw new Error(`${label}の時刻を入力してください。`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || number > duration) {
+    throw new Error(`${label}の時刻が正しくありません。`);
+  }
+  return Math.round(number * 1000) / 1000;
+}
+
+ipcMain.handle('list-training-data', async () => readTrainingData());
+
+ipcMain.handle('save-training-example', async (event, payload) => {
+  if (!payload?.sourcePath || !fs.existsSync(payload.sourcePath)) {
+    throw new Error('学習元の動画が見つかりません。');
+  }
+  const duration = Number(payload.duration);
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
+  const catchStart = safeTrainingTime(payload.catchStart, duration, 'キャッチ開始');
+  const takeoffStart = safeTrainingTime(payload.takeoffStart, duration, 'テイクオフ開始');
+  const takeoffEnd = safeTrainingTime(payload.takeoffEnd, duration, 'テイクオフ終了');
+  if (!(catchStart <= takeoffStart && takeoffStart < takeoffEnd)) {
+    throw new Error('時刻は「キャッチ開始 ≤ テイクオフ開始 < テイクオフ終了」の順にしてください。');
+  }
+  const stat = fs.statSync(payload.sourcePath);
+  const identity = crypto.createHash('sha256')
+    .update(`${path.resolve(payload.sourcePath)}:${stat.size}:${stat.mtimeMs}`)
+    .digest('hex').slice(0, 24);
+  const data = readTrainingData();
+  const example = {
+    id: payload.id && /^[a-zA-Z0-9-]+$/.test(payload.id) ? payload.id : crypto.randomUUID(),
+    source_name: path.basename(payload.sourcePath),
+    source_identity: identity,
+    source_path: path.resolve(payload.sourcePath),
+    duration_seconds: Math.round(duration * 1000) / 1000,
+    segments: [
+      { event: 'travel_paddle', start_seconds: 0, end_seconds: catchStart },
+      { event: 'catch_paddle', start_seconds: catchStart, end_seconds: takeoffStart },
+      { event: 'takeoff', start_seconds: takeoffStart, end_seconds: takeoffEnd },
+    ],
+    labels: [
+      { event: 'takeoff_start_hands_down', time_seconds: takeoffStart },
+      { event: 'takeoff_end_hands_release', time_seconds: takeoffEnd },
+    ],
+    verified_by_user: true,
+    updated_at: new Date().toISOString(),
+  };
+  const existingIndex = data.examples.findIndex((item) => item.id === example.id
+    || item.source_identity === identity
+    || (!item.source_identity && item.source_name === example.source_name));
+  if (existingIndex >= 0 && data.examples[existingIndex].id) example.id = data.examples[existingIndex].id;
+  if (existingIndex >= 0) data.examples[existingIndex] = example;
+  else data.examples.push(example);
+  writeTrainingData(data);
+  return example;
+});
+
+ipcMain.handle('delete-training-example', async (event, id) => {
+  const data = readTrainingData();
+  const before = data.examples.length;
+  data.examples = data.examples.filter((example) => example.id !== id);
+  if (data.examples.length !== before) writeTrainingData(data);
+  return { deleted: before - data.examples.length };
+});
+
+ipcMain.handle('analyze-form-local', async (event, source) => {
+  if (!source?.path || !fs.existsSync(source.path)) throw new Error('解析する動画が見つかりません。');
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-form-local-'));
+  const proxyPath = path.join(tempDir, 'form.mp4');
+  try {
+    const range = createSyncProxy(source, proxyPath);
+    const result = await postMultipartToSurfAnalyzer('/api/form/local', proxyPath);
+    const addOffset = (candidate) => candidate?.detected
+      ? { ...candidate, timestamp: range.searchStart + Number(candidate.timestamp) }
+      : candidate;
+    return {
+      ...result,
+      takeoff_start: addOffset(result.takeoff_start),
+      takeoff_end: addOffset(result.takeoff_end),
+      analyzed_range: range,
+    };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+ipcMain.handle('analyze-form-cloud', async (event, source) => {
+  if (!source?.path || !fs.existsSync(source.path)) throw new Error('解析する動画が見つかりません。');
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-form-cloud-'));
+  const proxyPath = path.join(tempDir, 'form.mp4');
+  try {
+    createSyncProxy(source, proxyPath);
+    const result = await postMultipartToSurfAnalyzer('/api/analyze', proxyPath);
+    const { frame_images, ...summary } = result;
+    return summary;
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 ipcMain.handle('analyze-exported-video', async (event, filePath) => {
   const result = await postMultipartToSurfAnalyzer('/api/analyze', filePath);
   // Skeleton frame images are large and the Cutter confirmation view only
