@@ -293,6 +293,19 @@ function safeTrainingTime(value, duration, label) {
   return Math.round(number * 1000) / 1000;
 }
 
+function createTrainingFeatureProxy(sourcePath, start, end, outputPath) {
+  const duration = end - start;
+  if (duration < 0.2) throw new Error('学習する動作区間が短すぎます。');
+  const result = spawnSync(FFMPEG, [
+    '-y', '-v', 'error', '-ss', String(start), '-t', String(duration), '-i', sourcePath,
+    '-an', '-vf', 'fps=8,scale=640:-2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+    '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outputPath,
+  ], { encoding: 'utf8' });
+  if (result.status !== 0 || !fs.existsSync(outputPath)) {
+    throw new Error(`動作特徴用の動画を準備できませんでした: ${result.stderr || 'ffmpeg error'}`);
+  }
+}
+
 ipcMain.handle('list-training-data', async () => readTrainingData());
 
 ipcMain.handle('save-training-example', async (event, payload) => {
@@ -301,33 +314,50 @@ ipcMain.handle('save-training-example', async (event, payload) => {
   }
   const duration = Number(payload.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
-  const catchStart = safeTrainingTime(payload.catchStart, duration, 'キャッチ開始');
+  const hasCatch = payload.catchStart !== '' && payload.catchStart !== null && payload.catchStart !== undefined;
+  const catchStart = hasCatch ? safeTrainingTime(payload.catchStart, duration, 'キャッチ開始') : null;
   const takeoffStart = safeTrainingTime(payload.takeoffStart, duration, 'テイクオフ開始');
   const takeoffEnd = safeTrainingTime(payload.takeoffEnd, duration, 'テイクオフ終了');
-  if (!(catchStart <= takeoffStart && takeoffStart < takeoffEnd)) {
-    throw new Error('時刻は「キャッチ開始 ≤ テイクオフ開始 < テイクオフ終了」の順にしてください。');
+  if (!(takeoffStart < takeoffEnd) || (hasCatch && catchStart > takeoffStart)) {
+    throw new Error(hasCatch
+      ? '時刻は「キャッチ開始 ≤ テイクオフ開始 < テイクオフ終了」の順にしてください。'
+      : 'テイクオフ開始は終了より前にしてください。');
   }
   const stat = fs.statSync(payload.sourcePath);
   const identity = crypto.createHash('sha256')
     .update(`${path.resolve(payload.sourcePath)}:${stat.size}:${stat.mtimeMs}`)
     .digest('hex').slice(0, 24);
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-training-features-'));
+  const proxyPath = path.join(tempDir, 'takeoff.mp4');
+  let motionFeatures;
+  try {
+    createTrainingFeatureProxy(payload.sourcePath, takeoffStart, takeoffEnd, proxyPath);
+    motionFeatures = await postMultipartToSurfAnalyzer('/api/training/features', proxyPath);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
   const data = readTrainingData();
+  const segments = [];
+  if (hasCatch) {
+    segments.push(
+      { event: 'travel_paddle', start_seconds: 0, end_seconds: catchStart },
+      { event: 'catch_paddle', start_seconds: catchStart, end_seconds: takeoffStart },
+    );
+  }
+  segments.push({ event: 'takeoff', start_seconds: takeoffStart, end_seconds: takeoffEnd });
   const example = {
     id: payload.id && /^[a-zA-Z0-9-]+$/.test(payload.id) ? payload.id : crypto.randomUUID(),
     source_name: path.basename(payload.sourcePath),
     source_identity: identity,
     source_path: path.resolve(payload.sourcePath),
     duration_seconds: Math.round(duration * 1000) / 1000,
-    segments: [
-      { event: 'travel_paddle', start_seconds: 0, end_seconds: catchStart },
-      { event: 'catch_paddle', start_seconds: catchStart, end_seconds: takeoffStart },
-      { event: 'takeoff', start_seconds: takeoffStart, end_seconds: takeoffEnd },
-    ],
+    segments,
     labels: [
       { event: 'takeoff_start_hands_down', time_seconds: takeoffStart },
       { event: 'takeoff_end_hands_release', time_seconds: takeoffEnd },
     ],
     verified_by_user: true,
+    motion_features: motionFeatures,
     updated_at: new Date().toISOString(),
   };
   const existingIndex = data.examples.findIndex((item) => item.id === example.id

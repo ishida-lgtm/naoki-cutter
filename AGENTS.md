@@ -511,6 +511,23 @@ media untouched. The surfing-analyzer backend reads this same local file at
 examples available. These backend additions live in
 `/Users/ishidanaoki/surfing-analyzer/backend/main.py`.
 
+Verified examples are not merely timestamp memories. On save, `main.js`
+extracts the labeled takeoff interval into an 8fps/640px temporary proxy and
+calls the local-only `POST /api/training/features` endpoint. The backend stores
+derived `naoki_motion_features_v1` data on the example: normalized MediaPipe
+joint sequences when the surfer is large enough, optical-flow magnitude and
+direction over time, and compact low-frequency visual descriptors. Raw frames
+and the proxy are deleted after extraction. This allows future detection to
+compare motion patterns rather than treating seconds as transferable facts.
+Far-away surfers may produce zero pose coverage; keep the motion/visual
+features and report that honestly instead of fabricating joint data.
+
+`catch_paddle` is optional because the user also supplies takeoff-only
+examples. An empty catch field saves only the `takeoff` segment and its two
+boundary labels. If catch is supplied, validation still requires
+`catch start <= takeoff start < takeoff end` and stores travel/catch/takeoff
+segments separately.
+
 ## Free GitHub Releases updater
 
 The public distribution repository is

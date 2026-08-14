@@ -323,11 +323,12 @@ function exampleLabel(example, event) {
 function updateFormEventBar() {
   const clip = formSourceClip();
   const duration = Number(clip?.duration) || 0;
-  const catchStart = Number(formCatchStart.value);
+  const hasCatch = formCatchStart.value !== '';
+  const catchStart = hasCatch ? Number(formCatchStart.value) : NaN;
   const takeoffStart = Number(formTakeoffStart.value);
   const takeoffEnd = Number(formTakeoffEnd.value);
   const spans = formEventBar.querySelectorAll('span');
-  if (!duration || !Number.isFinite(catchStart) || !Number.isFinite(takeoffStart) || !Number.isFinite(takeoffEnd)) {
+  if (!duration || !hasCatch || !Number.isFinite(catchStart) || !Number.isFinite(takeoffStart) || !Number.isFinite(takeoffEnd)) {
     spans.forEach((span) => { span.style.flexGrow = '1'; });
     return;
   }
@@ -493,7 +494,10 @@ function renderTrainingExamples() {
       : '未登録';
     times.textContent = `キャッチ ${catchText}　／　テイクオフ ${takeoffText}`;
     const privacy = document.createElement('small');
-    privacy.textContent = '動画本体は保存していません';
+    const featureCount = Number(example.motion_features?.sample_count) || 0;
+    privacy.textContent = featureCount
+      ? `動作特徴 ${featureCount}サンプル保存済み・動画本体は保存していません`
+      : '時刻ラベルのみ・動画本体は保存していません';
     header.appendChild(title);
     body.append(header, times, privacy);
     const remove = document.createElement('button');
