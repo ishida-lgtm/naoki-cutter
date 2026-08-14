@@ -70,6 +70,7 @@ let shuttleRunId = 0;
 const SHUTTLE_SPEEDS = [1, 2, 5, 10, 16];
 
 const clipList = document.getElementById('clipList');
+const selectAllClips = document.getElementById('selectAllClips');
 const dropZone = document.getElementById('dropZone');
 const addFilesBtn = document.getElementById('addFilesBtn');
 const recordModeBtn = document.getElementById('recordModeBtn');
@@ -954,10 +955,24 @@ applyBulkTransitionBtn.addEventListener('click', () => {
   render();
 });
 
+selectAllClips.addEventListener('change', () => {
+  if (selectAllClips.checked) clips.forEach((clip) => exportSelectedClipIds.add(clip.id));
+  else exportSelectedClipIds.clear();
+  const count = exportSelectedClipIds.size;
+  render();
+  statusText.textContent = count
+    ? `全${count}クリップを一括設定・複数書き出しの対象に選択しました`
+    : 'クリップの一括選択を解除しました';
+});
+
 let dragSrcIndex = null;
 
 function render() {
   pruneExportSelection();
+  const allClipsSelected = clips.length > 0 && exportSelectedClipIds.size === clips.length;
+  selectAllClips.disabled = clips.length === 0 || exporting;
+  selectAllClips.checked = allClipsSelected;
+  selectAllClips.indeterminate = exportSelectedClipIds.size > 0 && !allClipsSelected;
   clipList.innerHTML = '';
 
   clips.forEach((clip, i) => {

@@ -243,6 +243,20 @@ body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
   justify-content: space-between;
   align-items: center;
 }
+.select-all-clips {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  color: #b9ddff;
+  background: #242b32;
+  border: 1px solid #4b4b50;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.select-all-clips:has(input:disabled) { opacity: .45; cursor: default; }
+.select-all-clips input { margin: 0; }
 h2 { font-size: 15px; margin: 0 0 12px; color: #ddd; }
 
 button {

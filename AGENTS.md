@@ -31,6 +31,10 @@ halves.
 `E` invokes the checked-clips export button only when at least one clip is
 picked and no export is already running; key repeat must remain ignored so one
 keypress cannot open multiple save dialogs.
+The clip-panel header checkbox selects or clears every clip at once. It reflects
+an indeterminate state when only some clip-row checkboxes are selected and uses
+the same `exportSelectedClipIds` set, so it affects both batch settings and
+multi-clip export without changing the active preview clip.
 
 **Editor training intervals and batch clip settings.** The slim action strip
 below the main toolbar supports both interval and point labels without leaving
