@@ -231,7 +231,7 @@ function trainingDataPath() {
 
 function emptyTrainingData() {
   return {
-    schema_version: 1,
+    schema_version: 2,
     updated_at: new Date().toISOString(),
     privacy: {
       stores_video: false,
@@ -240,9 +240,14 @@ function emptyTrainingData() {
     },
     definitions: {
       travel_paddle: '沖へ移動するための通常のパドル',
+      preparation: '波待ちから回ってパドルに入るまでの準備動作',
+      catch_timing: '波をつかむキャッチの瞬間',
       catch_paddle: '波をつかんでテイクオフへ入る直前の強いパドル',
+      paddle_form: 'パドル動作の形とフォーム',
+      hands_down_timing: '手をボードについた瞬間',
       takeoff_start_hands_down: '手をボードについてテイクオフ動作を開始した瞬間',
       takeoff_end_hands_release: '手がボードから離れてテイクオフ動作が終了した瞬間',
+      takeoff_posture: 'テイクオフの形・足の出し方・種類',
     },
     examples: [],
   };
@@ -265,8 +270,15 @@ function readTrainingData() {
       migrated = true;
       return { ...example, id: crypto.randomUUID() };
     });
-    const normalized = { ...emptyTrainingData(), ...data, examples };
-    if (migrated) writeTrainingData(normalized);
+    const defaults = emptyTrainingData();
+    const normalized = {
+      ...defaults,
+      ...data,
+      schema_version: 2,
+      definitions: { ...defaults.definitions, ...(data.definitions || {}) },
+      examples,
+    };
+    if (migrated || data.schema_version !== 2) writeTrainingData(normalized);
     return normalized;
   } catch {
     throw new Error('AI学習データが壊れています。ファイルを確認してください。');
@@ -291,6 +303,10 @@ function safeTrainingTime(value, duration, label) {
     throw new Error(`${label}の時刻が正しくありません。`);
   }
   return Math.round(number * 1000) / 1000;
+}
+
+function safeTrainingText(value, maxLength = 200) {
+  return String(value || '').trim().slice(0, maxLength);
 }
 
 function createTrainingFeatureProxy(sourcePath, start, end, outputPath) {
@@ -358,12 +374,32 @@ ipcMain.handle('save-training-example', async (event, payload) => {
     ],
     verified_by_user: true,
     motion_features: motionFeatures,
+    segment_features: { takeoff: motionFeatures },
+    metrics: {
+      takeoff_duration_seconds: Math.round((takeoffEnd - takeoffStart) * 1000) / 1000,
+    },
     updated_at: new Date().toISOString(),
   };
   const existingIndex = data.examples.findIndex((item) => item.id === example.id
     || item.source_identity === identity
     || (!item.source_identity && item.source_name === example.source_name));
-  if (existingIndex >= 0 && data.examples[existingIndex].id) example.id = data.examples[existingIndex].id;
+  if (existingIndex >= 0) {
+    const existing = data.examples[existingIndex];
+    if (existing.id) example.id = existing.id;
+    example.segments = [
+      ...(existing.segments || []).filter((segment) => !['travel_paddle', 'catch_paddle', 'takeoff'].includes(segment.event)),
+      ...segments,
+    ].sort((a, b) => a.start_seconds - b.start_seconds);
+    example.labels = [
+      ...(existing.labels || []).filter((label) => ![
+        'takeoff_start_hands_down', 'takeoff_end_hands_release',
+      ].includes(label.event)),
+      ...example.labels,
+    ];
+    example.annotations = { ...(existing.annotations || {}) };
+    example.segment_features = { ...(existing.segment_features || {}), takeoff: motionFeatures };
+    example.metrics = { ...(existing.metrics || {}), ...example.metrics };
+  }
   if (existingIndex >= 0) data.examples[existingIndex] = example;
   else data.examples.push(example);
   writeTrainingData(data);
@@ -371,26 +407,56 @@ ipcMain.handle('save-training-example', async (event, payload) => {
 });
 
 ipcMain.handle('save-training-segment', async (event, payload) => {
-  const eventNames = {
-    takeoff: 'テイクオフ',
-    catch_paddle: 'キャッチのパドル',
-    travel_paddle: '移動パドル',
+  const eventConfigs = {
+    preparation: { name: '準備（波待ちからパドル開始まで）', mode: 'interval' },
+    catch_timing: { name: 'キャッチのタイミング', mode: 'point' },
+    catch_paddle: { name: 'キャッチのパドル', mode: 'interval' },
+    paddle_form: { name: 'パドルの形', mode: 'interval' },
+    hands_down_timing: { name: '手をつくタイミング', mode: 'point' },
+    takeoff: { name: 'テイクオフ動作', mode: 'interval' },
+    takeoff_posture: { name: 'テイクオフの姿勢', mode: 'interval' },
   };
   if (!payload?.sourcePath || !fs.existsSync(payload.sourcePath)) {
     throw new Error('学習元の動画が見つかりません。');
   }
-  if (!eventNames[payload.event]) throw new Error('学習する動作が正しくありません。');
+  const config = eventConfigs[payload.event];
+  if (!config) throw new Error('学習する動作が正しくありません。');
   const duration = Number(payload.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
   const start = safeTrainingTime(payload.start, duration, '学習区間の開始');
-  const end = safeTrainingTime(payload.end, duration, '学習区間の終了');
-  if (end - start < 0.2) throw new Error('学習区間は0.2秒以上にしてください。');
+  const end = config.mode === 'point'
+    ? start
+    : safeTrainingTime(payload.end, duration, '学習区間の終了');
+  if (config.mode === 'interval' && end - start < 0.2) {
+    throw new Error('学習区間は開始より後に終了を設定し、0.2秒以上にしてください。');
+  }
+  const paddleForm = safeTrainingText(payload.details?.paddleForm);
+  const takeoffShape = safeTrainingText(payload.details?.takeoffShape, 120);
+  const takeoffFootwork = safeTrainingText(payload.details?.takeoffFootwork, 120);
+  const takeoffType = safeTrainingText(payload.details?.takeoffType, 120);
+  if (payload.event === 'paddle_form' && !paddleForm) {
+    throw new Error('パドルの形を入力してください。');
+  }
+  if (payload.event === 'takeoff_posture' && !takeoffShape && !takeoffFootwork && !takeoffType) {
+    throw new Error('テイクオフの形・足の出し方・種類のいずれかを入力してください。');
+  }
+
+  let featureStart = start;
+  let featureEnd = end;
+  if (config.mode === 'point') {
+    featureStart = Math.max(0, start - 0.75);
+    featureEnd = Math.min(duration, start + 0.75);
+    if (featureEnd - featureStart < 0.2) {
+      featureStart = Math.max(0, Math.min(start, duration - 0.2));
+      featureEnd = Math.min(duration, featureStart + 0.2);
+    }
+  }
 
   const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-training-segment-'));
   const proxyPath = path.join(tempDir, `${payload.event}.mp4`);
   let features;
   try {
-    createTrainingFeatureProxy(payload.sourcePath, start, end, proxyPath);
+    createTrainingFeatureProxy(payload.sourcePath, featureStart, featureEnd, proxyPath);
     features = await postMultipartToSurfAnalyzer('/api/training/features', proxyPath);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -420,13 +486,15 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
   example.source_identity = identity;
   example.source_path = path.resolve(payload.sourcePath);
   example.duration_seconds = Math.round(duration * 1000) / 1000;
-  example.segments = (example.segments || []).filter((segment) => segment.event !== payload.event);
-  example.segments.push({ event: payload.event, start_seconds: start, end_seconds: end });
-  if (payload.event === 'catch_paddle') {
-    const travel = example.segments.find((segment) => segment.event === 'travel_paddle');
-    if (travel && travel.start_seconds <= start) travel.end_seconds = start;
+  if (config.mode === 'interval') {
+    example.segments = (example.segments || []).filter((segment) => segment.event !== payload.event);
+    example.segments.push({ event: payload.event, start_seconds: start, end_seconds: end });
+    if (payload.event === 'catch_paddle') {
+      const travel = example.segments.find((segment) => segment.event === 'travel_paddle');
+      if (travel && travel.start_seconds <= start) travel.end_seconds = start;
+    }
+    example.segments.sort((a, b) => a.start_seconds - b.start_seconds);
   }
-  example.segments.sort((a, b) => a.start_seconds - b.start_seconds);
   example.segment_features = { ...(example.segment_features || {}), [payload.event]: features };
   if (payload.event === 'takeoff') {
     example.motion_features = features;
@@ -437,6 +505,9 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
       { event: 'takeoff_start_hands_down', time_seconds: start },
       { event: 'takeoff_end_hands_release', time_seconds: end },
     );
+  } else if (config.mode === 'point') {
+    example.labels = (example.labels || []).filter((label) => label.event !== payload.event);
+    example.labels.push({ event: payload.event, time_seconds: start });
   } else {
     const startLabel = `${payload.event}_start`;
     const endLabel = `${payload.event}_end`;
@@ -446,10 +517,33 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
       { event: endLabel, time_seconds: end },
     );
   }
+  example.metrics = { ...(example.metrics || {}) };
+  if (payload.event === 'takeoff') {
+    example.metrics.takeoff_duration_seconds = Math.round((end - start) * 1000) / 1000;
+  }
+  if (payload.event === 'preparation') {
+    example.metrics.preparation_duration_seconds = Math.round((end - start) * 1000) / 1000;
+  }
+  example.annotations = { ...(example.annotations || {}) };
+  if (payload.event === 'paddle_form') {
+    example.annotations.paddle_form = { description: paddleForm };
+  }
+  if (payload.event === 'takeoff_posture') {
+    example.annotations.takeoff_posture = {
+      shape: takeoffShape,
+      footwork: takeoffFootwork,
+      type: takeoffType,
+    };
+  }
   example.verified_by_user = true;
   example.updated_at = new Date().toISOString();
   writeTrainingData(data);
-  return { example, event_name: eventNames[payload.event], feature_samples: features.sample_count || 0 };
+  return {
+    example,
+    event_name: config.name,
+    mode: config.mode,
+    feature_samples: features.sample_count || 0,
+  };
 });
 
 ipcMain.handle('delete-training-example', async (event, id) => {

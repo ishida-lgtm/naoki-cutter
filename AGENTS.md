@@ -33,13 +33,24 @@ picked and no export is already running; key repeat must remain ignored so one
 keypress cannot open multiple save dialogs.
 
 **Editor training intervals and batch clip settings.** The slim action strip
-below the main toolbar lets the user label a `takeoff`, `catch_paddle`, or
-`travel_paddle` interval without leaving the editor. Start/end buttons use the
+below the main toolbar supports both interval and point labels without leaving
+the editor. Intervals are `preparation` (wave waiting through turning and
+starting to paddle), `catch_paddle`, `paddle_form`, `takeoff`, and
+`takeoff_posture`; points are `catch_timing` and `hands_down_timing`. Start/end
+buttons use the
 active editing video's absolute source time (including the active comparison
 pane), and `save-training-segment` extracts local derived features through the
 same `/api/training/features` endpoint before merging that event into the
 source's existing verified example. Re-labeling one event replaces only that
 event; it must not erase other event segments for the same source.
+
+Point labels extract features from a small window around the confirmed frame
+but store only the exact user-confirmed timestamp. `paddle_form` stores a
+free-text form description. `takeoff_posture` stores separate free-text shape,
+footwork, and takeoff-type fields. `takeoff_duration_seconds` and
+`preparation_duration_seconds` are derived from their intervals and stored in
+`example.metrics`; never ask the user to calculate these manually. Training
+schema version 2 is additive and must preserve older travel/catch/takeoff data.
 
 Zoom has direct 2x and 3x preset buttons. The `設定の適用先` control copies the
 active clip's current zoom/static pan, pan-animation keyframes, whole-clip

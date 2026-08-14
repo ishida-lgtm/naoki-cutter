@@ -370,6 +370,17 @@ button.icon-btn {
   border-radius: 5px;
   font-size: 10px;
 }
+.edit-action-strip .training-detail {
+  width: 128px;
+  height: 26px;
+  padding: 2px 6px;
+  color: #ededed;
+  background: #2b2b2e;
+  border: 1px solid #48484c;
+  border-radius: 5px;
+  font-size: 10px;
+  flex: 0 0 auto;
+}
 .training-range-controls { flex: 1 1 auto; }
 .batch-setting-controls { margin-left: auto; }
 .zoom-preset { min-width: 29px; color: #bfe4ff; border-color: #3c627a; }

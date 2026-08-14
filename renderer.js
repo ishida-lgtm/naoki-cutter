@@ -190,6 +190,10 @@ const editTrainingStartBtn = document.getElementById('editTrainingStartBtn');
 const editTrainingEndBtn = document.getElementById('editTrainingEndBtn');
 const editTrainingRange = document.getElementById('editTrainingRange');
 const editTrainingSaveBtn = document.getElementById('editTrainingSaveBtn');
+const editPaddleForm = document.getElementById('editPaddleForm');
+const editTakeoffShape = document.getElementById('editTakeoffShape');
+const editTakeoffFootwork = document.getElementById('editTakeoffFootwork');
+const editTakeoffType = document.getElementById('editTakeoffType');
 const settingScope = document.getElementById('settingScope');
 const applyClipSettingsBtn = document.getElementById('applyClipSettingsBtn');
 const speedSelect = document.getElementById('speedSelect');
@@ -483,8 +487,11 @@ function renderTrainingExamples() {
   trainingEmpty.textContent = '正解データはまだありません。';
   trainingEmpty.classList.toggle('hidden', examples.length > 0);
   examples.forEach((example) => {
+    const preparationSegment = exampleSegment(example, 'preparation');
     const catchSegment = exampleSegment(example, 'catch_paddle');
+    const paddleFormSegment = exampleSegment(example, 'paddle_form');
     const takeoffSegment = exampleSegment(example, 'takeoff');
+    const takeoffPostureSegment = exampleSegment(example, 'takeoff_posture');
     const card = document.createElement('article');
     card.className = 'training-example';
     const body = document.createElement('div');
@@ -495,6 +502,8 @@ function renderTrainingExamples() {
     const times = document.createElement('p');
     const takeoffStartLabel = exampleLabel(example, 'takeoff_start_hands_down');
     const takeoffEndLabel = exampleLabel(example, 'takeoff_end_hands_release');
+    const handsDownLabel = exampleLabel(example, 'hands_down_timing');
+    const catchTimingLabel = exampleLabel(example, 'catch_timing');
     const catchText = catchSegment
       ? `${Number(catchSegment.start_seconds).toFixed(2)}–${Number(catchSegment.end_seconds).toFixed(2)}秒`
       : '未登録';
@@ -503,7 +512,32 @@ function renderTrainingExamples() {
     const takeoffText = Number.isFinite(Number(takeoffStart)) && Number.isFinite(Number(takeoffEnd))
       ? `${Number(takeoffStart).toFixed(2)}–${Number(takeoffEnd).toFixed(2)}秒`
       : '未登録';
-    times.textContent = `キャッチ ${catchText}　／　テイクオフ ${takeoffText}`;
+    const preparationDuration = Number(example.metrics?.preparation_duration_seconds)
+      || (preparationSegment ? Number(preparationSegment.end_seconds) - Number(preparationSegment.start_seconds) : 0);
+    const takeoffDuration = Number(example.metrics?.takeoff_duration_seconds)
+      || (takeoffSegment ? Number(takeoffSegment.end_seconds) - Number(takeoffSegment.start_seconds) : 0);
+    const pointText = (label) => label ? `${Number(label.time_seconds).toFixed(2)}秒` : '未登録';
+    times.textContent = [
+      `準備 ${preparationDuration > 0 ? `${preparationDuration.toFixed(2)}秒` : '未登録'}`,
+      `キャッチ時刻 ${pointText(catchTimingLabel)}`,
+      `キャッチ区間 ${catchText}`,
+      `手をつく時刻 ${pointText(handsDownLabel || takeoffStartLabel)}`,
+      `テイクオフ ${takeoffText}${takeoffDuration > 0 ? `（所要 ${takeoffDuration.toFixed(2)}秒）` : ''}`,
+    ].join('　／　');
+    const annotations = document.createElement('p');
+    const paddleDescription = example.annotations?.paddle_form?.description;
+    const posture = example.annotations?.takeoff_posture || {};
+    const annotationParts = [];
+    if (paddleFormSegment || paddleDescription) annotationParts.push(`パドルの形: ${paddleDescription || '区間のみ登録'}`);
+    if (takeoffPostureSegment || posture.shape || posture.footwork || posture.type) {
+      annotationParts.push(`テイクオフ姿勢: ${[
+        posture.shape && `形 ${posture.shape}`,
+        posture.footwork && `足 ${posture.footwork}`,
+        posture.type && `種類 ${posture.type}`,
+      ].filter(Boolean).join('・') || '区間のみ登録'}`);
+    }
+    annotations.textContent = annotationParts.join('　／　');
+    annotations.classList.toggle('hidden', annotationParts.length === 0);
     const privacy = document.createElement('small');
     const featureCount = Object.values(example.segment_features || {})
       .reduce((sum, features) => sum + (Number(features?.sample_count) || 0), 0)
@@ -512,7 +546,7 @@ function renderTrainingExamples() {
       ? `動作特徴 ${featureCount}サンプル保存済み・動画本体は保存していません`
       : '時刻ラベルのみ・動画本体は保存していません';
     header.appendChild(title);
-    body.append(header, times, privacy);
+    body.append(header, times, annotations, privacy);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.textContent = '削除';
@@ -1055,8 +1089,9 @@ function render() {
   const hasSelectedClip = Boolean(selectedClip());
   [zoom2xBtn, zoom3xBtn, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
     settingScope, applyClipSettingsBtn].forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
-  editTrainingSaveBtn.disabled = !hasSelectedClip || exporting
-    || pendingEditTrainingStart == null || pendingEditTrainingEnd == null;
+  [editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType]
+    .forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
+  syncEditTrainingEventUI();
   saveProjectBtn.disabled = clips.length === 0 || exporting;
   recordModeBtn.disabled = !selectedClipId || exporting;
   renderComparisonControls();
@@ -2488,11 +2523,41 @@ function setZoomPreset(value) {
 zoom2xBtn.addEventListener('click', () => setZoomPreset(2));
 zoom3xBtn.addEventListener('click', () => setZoomPreset(3));
 
+const POINT_TRAINING_EVENTS = new Set(['catch_timing', 'hands_down_timing']);
+
+function editTrainingIsPoint() {
+  return POINT_TRAINING_EVENTS.has(editTrainingEvent.value);
+}
+
+function editTrainingDetailsReady() {
+  if (editTrainingEvent.value === 'paddle_form') return Boolean(editPaddleForm.value.trim());
+  if (editTrainingEvent.value === 'takeoff_posture') {
+    return Boolean(editTakeoffShape.value.trim() || editTakeoffFootwork.value.trim() || editTakeoffType.value.trim());
+  }
+  return true;
+}
+
+function syncEditTrainingEventUI() {
+  const point = editTrainingIsPoint();
+  const hasClip = Boolean(selectedClip()) && !exporting;
+  editTrainingStartBtn.textContent = point ? '● 時刻' : '［開始';
+  editTrainingStartBtn.title = point ? '現在位置をタイミングとして記録' : '現在位置を学習区間の開始にする';
+  editTrainingEndBtn.classList.toggle('hidden', point);
+  editTrainingEndBtn.disabled = !hasClip || point;
+  editPaddleForm.classList.toggle('hidden', editTrainingEvent.value !== 'paddle_form');
+  const posture = editTrainingEvent.value === 'takeoff_posture';
+  [editTakeoffShape, editTakeoffFootwork, editTakeoffType]
+    .forEach((input) => input.classList.toggle('hidden', !posture));
+  updateEditTrainingRange();
+}
+
 function updateEditTrainingRange() {
   const format = (value) => value == null ? '--:--' : fmtTime(value);
-  editTrainingRange.textContent = `${format(pendingEditTrainingStart)} → ${format(pendingEditTrainingEnd)}`;
-  editTrainingSaveBtn.disabled = !selectedClip()
-    || pendingEditTrainingStart == null || pendingEditTrainingEnd == null || exporting;
+  editTrainingRange.textContent = editTrainingIsPoint()
+    ? `時刻 ${format(pendingEditTrainingStart)}`
+    : `${format(pendingEditTrainingStart)} → ${format(pendingEditTrainingEnd)}`;
+  editTrainingSaveBtn.disabled = !selectedClip() || exporting || pendingEditTrainingStart == null
+    || (!editTrainingIsPoint() && pendingEditTrainingEnd == null) || !editTrainingDetailsReady();
 }
 
 editTrainingStartBtn.addEventListener('click', () => {
@@ -2509,11 +2574,20 @@ editTrainingEndBtn.addEventListener('click', () => {
   updateEditTrainingRange();
 });
 
+editTrainingEvent.addEventListener('change', syncEditTrainingEventUI);
+[editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType]
+  .forEach((input) => input.addEventListener('input', updateEditTrainingRange));
+
 editTrainingSaveBtn.addEventListener('click', async () => {
   const clip = selectedClip();
-  if (!clip || pendingEditTrainingStart == null || pendingEditTrainingEnd == null) return;
-  const start = Math.min(pendingEditTrainingStart, pendingEditTrainingEnd);
-  const end = Math.max(pendingEditTrainingStart, pendingEditTrainingEnd);
+  if (!clip || pendingEditTrainingStart == null
+    || (!editTrainingIsPoint() && pendingEditTrainingEnd == null)) return;
+  const start = editTrainingIsPoint()
+    ? pendingEditTrainingStart
+    : Math.min(pendingEditTrainingStart, pendingEditTrainingEnd);
+  const end = editTrainingIsPoint()
+    ? pendingEditTrainingStart
+    : Math.max(pendingEditTrainingStart, pendingEditTrainingEnd);
   editTrainingSaveBtn.disabled = true;
   statusText.textContent = '選択した動作区間からMac内で特徴を抽出しています…';
   try {
@@ -2523,11 +2597,24 @@ editTrainingSaveBtn.addEventListener('click', async () => {
       event: editTrainingEvent.value,
       start,
       end,
+      details: {
+        paddleForm: editPaddleForm.value,
+        takeoffShape: editTakeoffShape.value,
+        takeoffFootwork: editTakeoffFootwork.value,
+        takeoffType: editTakeoffType.value,
+      },
     });
     pendingEditTrainingStart = null;
     pendingEditTrainingEnd = null;
+    editPaddleForm.value = '';
+    editTakeoffShape.value = '';
+    editTakeoffFootwork.value = '';
+    editTakeoffType.value = '';
     updateEditTrainingRange();
-    statusText.textContent = `${result.event_name} ${fmtTime(start)}〜${fmtTime(end)}を学習データに追加しました（${result.feature_samples}サンプル）`;
+    const savedTime = result.mode === 'point'
+      ? fmtTime(start)
+      : `${fmtTime(start)}〜${fmtTime(end)}（${(end - start).toFixed(2)}秒）`;
+    statusText.textContent = `${result.event_name} ${savedTime}を学習データに追加しました（${result.feature_samples}サンプル）`;
     refreshTrainingData();
   } catch (error) {
     statusText.textContent = `学習データを保存できません: ${error.message}`;

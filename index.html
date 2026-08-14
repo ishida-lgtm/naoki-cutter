@@ -130,13 +130,21 @@
           <div class="toolbar-group training-range-controls">
             <span class="control-label">学習区間</span>
             <select id="editTrainingEvent" disabled>
-              <option value="takeoff">テイクオフ</option>
+              <option value="preparation">準備（波待ち→回ってパドル）</option>
+              <option value="catch_timing">キャッチのタイミング</option>
               <option value="catch_paddle">キャッチのパドル</option>
-              <option value="travel_paddle">移動パドル</option>
+              <option value="paddle_form">パドルの形</option>
+              <option value="hands_down_timing">手をつくタイミング</option>
+              <option value="takeoff">テイクオフ動作</option>
+              <option value="takeoff_posture">テイクオフの姿勢</option>
             </select>
             <button id="editTrainingStartBtn" disabled title="現在位置を学習区間の開始にする">［開始</button>
             <button id="editTrainingEndBtn" disabled title="現在位置を学習区間の終了にする">終了］</button>
             <span id="editTrainingRange" class="zoom-hint">未設定</span>
+            <input id="editPaddleForm" class="training-detail hidden" type="text" maxlength="200" placeholder="パドルの形を入力" disabled>
+            <input id="editTakeoffShape" class="training-detail hidden" type="text" maxlength="120" placeholder="テイクオフの形" disabled>
+            <input id="editTakeoffFootwork" class="training-detail hidden" type="text" maxlength="120" placeholder="足の出し方" disabled>
+            <input id="editTakeoffType" class="training-detail hidden" type="text" maxlength="120" placeholder="テイクオフの種類" disabled>
             <button id="editTrainingSaveBtn" disabled>学習データに追加</button>
           </div>
           <div class="toolbar-divider"></div>
@@ -361,10 +369,12 @@
         <button id="refreshTrainingBtn">再読み込み</button>
       </div>
       <div class="training-definitions">
-        <div><b>移動パドル</b><span>沖へ移動するための通常のパドル</span></div>
+        <div><b>準備時間</b><span>波待ちから回ってパドルに入るまで</span></div>
+        <div><b>キャッチ</b><span>キャッチのタイミングと直前のパドル</span></div>
+        <div><b>パドルの形</b><span>動作区間とフォームの説明</span></div>
         <div><b>キャッチのパドル</b><span>波をつかみテイクオフへ入る直前のパドル</span></div>
-        <div><b>テイクオフ開始</b><span>手をボードについた瞬間</span></div>
-        <div><b>テイクオフ終了</b><span>手がボードから離れた瞬間</span></div>
+        <div><b>手をつくタイミング</b><span>手をボードについた瞬間</span></div>
+        <div><b>テイクオフ</b><span>タイミング・姿勢・足の出し方・種類・所要時間</span></div>
       </div>
       <div id="trainingExampleList" class="training-example-list"></div>
       <p id="trainingEmpty" class="training-empty">正解データはまだありません。</p>
