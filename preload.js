@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   analyzeFormCloud: (payload) => ipcRenderer.invoke('analyze-form-cloud', payload),
   listTrainingData: () => ipcRenderer.invoke('list-training-data'),
   saveTrainingExample: (payload) => ipcRenderer.invoke('save-training-example', payload),
+  saveTrainingSegment: (payload) => ipcRenderer.invoke('save-training-segment', payload),
   deleteTrainingExample: (id) => ipcRenderer.invoke('delete-training-example', id),
   analyzeExportedVideo: (filePath) => ipcRenderer.invoke('analyze-exported-video', filePath),
   saveExportedAsReference: (payload) => ipcRenderer.invoke('save-exported-as-reference', payload),

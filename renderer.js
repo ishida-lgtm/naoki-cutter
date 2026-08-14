@@ -25,6 +25,8 @@ let activeWorkspace = 'edit';
 let trainingData = null;
 let formAnalysisInProgress = false;
 let currentTrainingExampleId = null;
+let pendingEditTrainingStart = null;
+let pendingEditTrainingEnd = null;
 let lastExportedPath = localStorage.getItem('lastExportedPath') || null;
 let analysisInProgress = false;
 let recordingActive = false;
@@ -181,6 +183,15 @@ const previewVideoBox = document.getElementById('previewVideoBox');
 const zoomSlider = document.getElementById('zoomSlider');
 const zoomValue = document.getElementById('zoomValue');
 const zoomResetBtn = document.getElementById('zoomResetBtn');
+const zoom2xBtn = document.getElementById('zoom2xBtn');
+const zoom3xBtn = document.getElementById('zoom3xBtn');
+const editTrainingEvent = document.getElementById('editTrainingEvent');
+const editTrainingStartBtn = document.getElementById('editTrainingStartBtn');
+const editTrainingEndBtn = document.getElementById('editTrainingEndBtn');
+const editTrainingRange = document.getElementById('editTrainingRange');
+const editTrainingSaveBtn = document.getElementById('editTrainingSaveBtn');
+const settingScope = document.getElementById('settingScope');
+const applyClipSettingsBtn = document.getElementById('applyClipSettingsBtn');
 const speedSelect = document.getElementById('speedSelect');
 const speedSegStartBtn = document.getElementById('speedSegStartBtn');
 const speedSegEndBtn = document.getElementById('speedSegEndBtn');
@@ -494,7 +505,9 @@ function renderTrainingExamples() {
       : '未登録';
     times.textContent = `キャッチ ${catchText}　／　テイクオフ ${takeoffText}`;
     const privacy = document.createElement('small');
-    const featureCount = Number(example.motion_features?.sample_count) || 0;
+    const featureCount = Object.values(example.segment_features || {})
+      .reduce((sum, features) => sum + (Number(features?.sample_count) || 0), 0)
+      || Number(example.motion_features?.sample_count) || 0;
     privacy.textContent = featureCount
       ? `動作特徴 ${featureCount}サンプル保存済み・動画本体は保存していません`
       : '時刻ラベルのみ・動画本体は保存していません';
@@ -945,8 +958,8 @@ function render() {
     row1.className = 'row1';
     const exportPick = document.createElement('label');
     exportPick.className = 'clip-export-pick';
-    exportPick.title = 'このクリップを複数選択書き出しに含める';
-    exportPick.innerHTML = `<input type="checkbox" ${exportSelectedClipIds.has(clip.id) ? 'checked' : ''} /> 書出`;
+    exportPick.title = 'このクリップを一括設定・複数書き出しの対象にする';
+    exportPick.innerHTML = `<input type="checkbox" ${exportSelectedClipIds.has(clip.id) ? 'checked' : ''} /> 選択`;
     exportPick.addEventListener('click', (e) => e.stopPropagation());
     exportPick.querySelector('input').addEventListener('change', (e) => {
       if (e.target.checked) exportSelectedClipIds.add(clip.id);
@@ -1037,8 +1050,13 @@ function render() {
   const exportSelectionCount = exportSelectedClipIds.size;
   exportSelectedBtn.disabled = exportSelectionCount === 0 || exporting;
   exportSelectedBtn.textContent = exportSelectionCount
-    ? `チェックした${exportSelectionCount}クリップを書き出す`
-    : '書き出すクリップをチェック';
+    ? `選択した${exportSelectionCount}クリップを書き出す`
+    : '書き出すクリップを選択';
+  const hasSelectedClip = Boolean(selectedClip());
+  [zoom2xBtn, zoom3xBtn, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
+    settingScope, applyClipSettingsBtn].forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
+  editTrainingSaveBtn.disabled = !hasSelectedClip || exporting
+    || pendingEditTrainingStart == null || pendingEditTrainingEnd == null;
   saveProjectBtn.disabled = clips.length === 0 || exporting;
   recordModeBtn.disabled = !selectedClipId || exporting;
   renderComparisonControls();
@@ -1725,6 +1743,9 @@ function selectClip(id, { autoplay = false, keepPlayback = false, seekTo = null 
   pendingSegStart = null;
   pendingSegEnd = null;
   updateSpeedSegPendingLabel();
+  pendingEditTrainingStart = null;
+  pendingEditTrainingEnd = null;
+  updateEditTrainingRange();
   syncZoomUI();
 
   if (keepPlayback && samePath && seekTo == null) {
@@ -2453,6 +2474,86 @@ function syncZoomUI() {
   renderKeyframeMarkers();
   renderSpeedSegList();
 }
+
+function setZoomPreset(value) {
+  const clip = selectedClip();
+  if (!clip) return;
+  pushHistory();
+  clip.zoom = value;
+  zoomSlider.value = String(value);
+  zoomValue.textContent = `${value.toFixed(1)}x`;
+  applyPreviewZoom();
+}
+
+zoom2xBtn.addEventListener('click', () => setZoomPreset(2));
+zoom3xBtn.addEventListener('click', () => setZoomPreset(3));
+
+function updateEditTrainingRange() {
+  const format = (value) => value == null ? '--:--' : fmtTime(value);
+  editTrainingRange.textContent = `${format(pendingEditTrainingStart)} → ${format(pendingEditTrainingEnd)}`;
+  editTrainingSaveBtn.disabled = !selectedClip()
+    || pendingEditTrainingStart == null || pendingEditTrainingEnd == null || exporting;
+}
+
+editTrainingStartBtn.addEventListener('click', () => {
+  const clip = selectedClip();
+  if (!clip) return;
+  pendingEditTrainingStart = Math.max(clip.trimStart, Math.min(clip.trimEnd, Number(activeEditingVideo().currentTime) || clip.trimStart));
+  updateEditTrainingRange();
+});
+
+editTrainingEndBtn.addEventListener('click', () => {
+  const clip = selectedClip();
+  if (!clip) return;
+  pendingEditTrainingEnd = Math.max(clip.trimStart, Math.min(clip.trimEnd, Number(activeEditingVideo().currentTime) || clip.trimStart));
+  updateEditTrainingRange();
+});
+
+editTrainingSaveBtn.addEventListener('click', async () => {
+  const clip = selectedClip();
+  if (!clip || pendingEditTrainingStart == null || pendingEditTrainingEnd == null) return;
+  const start = Math.min(pendingEditTrainingStart, pendingEditTrainingEnd);
+  const end = Math.max(pendingEditTrainingStart, pendingEditTrainingEnd);
+  editTrainingSaveBtn.disabled = true;
+  statusText.textContent = '選択した動作区間からMac内で特徴を抽出しています…';
+  try {
+    const result = await window.api.saveTrainingSegment({
+      sourcePath: clip.path,
+      duration: clip.duration,
+      event: editTrainingEvent.value,
+      start,
+      end,
+    });
+    pendingEditTrainingStart = null;
+    pendingEditTrainingEnd = null;
+    updateEditTrainingRange();
+    statusText.textContent = `${result.event_name} ${fmtTime(start)}〜${fmtTime(end)}を学習データに追加しました（${result.feature_samples}サンプル）`;
+    refreshTrainingData();
+  } catch (error) {
+    statusText.textContent = `学習データを保存できません: ${error.message}`;
+  } finally {
+    render();
+  }
+});
+
+applyClipSettingsBtn.addEventListener('click', () => {
+  const source = selectedClip();
+  if (!source) return;
+  let targets;
+  if (settingScope.value === 'all') targets = [...clips];
+  else if (settingScope.value === 'selected') {
+    targets = clips.filter((clip) => exportSelectedClipIds.has(clip.id));
+    if (!targets.length) {
+      statusText.textContent = '一括設定するクリップを「選択」にチェックしてください';
+      return;
+    }
+  } else targets = [source];
+  pushHistory();
+  targets.forEach((target) => cloneClipSettingsForTarget(source, target));
+  syncZoomUI();
+  render();
+  statusText.textContent = `現在のZoom・位置・キーフレーム・速度設定を${targets.length}クリップに適用しました`;
+});
 
 // ---- Per-segment speed (speed ramping within a single clip) ----
 

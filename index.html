@@ -79,6 +79,8 @@
             <span class="control-label">ズーム</span>
             <input type="range" id="zoomSlider" min="1" max="3" step="0.1" value="1" disabled />
             <span id="zoomValue" class="zoom-value">1.0x</span>
+            <button id="zoom2xBtn" class="zoom-preset" disabled>2x</button>
+            <button id="zoom3xBtn" class="zoom-preset" disabled>3x</button>
             <button id="zoomResetBtn" disabled>リセット</button>
           </div>
           <div class="toolbar-divider"></div>
@@ -122,6 +124,30 @@
               <option value="2">2倍</option>
             </select>
             <button id="speedSegAddBtn" disabled title="設定した区間速度を追加">＋区間</button>
+          </div>
+        </div>
+        <div class="edit-action-strip">
+          <div class="toolbar-group training-range-controls">
+            <span class="control-label">学習区間</span>
+            <select id="editTrainingEvent" disabled>
+              <option value="takeoff">テイクオフ</option>
+              <option value="catch_paddle">キャッチのパドル</option>
+              <option value="travel_paddle">移動パドル</option>
+            </select>
+            <button id="editTrainingStartBtn" disabled title="現在位置を学習区間の開始にする">［開始</button>
+            <button id="editTrainingEndBtn" disabled title="現在位置を学習区間の終了にする">終了］</button>
+            <span id="editTrainingRange" class="zoom-hint">未設定</span>
+            <button id="editTrainingSaveBtn" disabled>学習データに追加</button>
+          </div>
+          <div class="toolbar-divider"></div>
+          <div class="toolbar-group batch-setting-controls">
+            <span class="control-label">設定の適用先</span>
+            <select id="settingScope" disabled>
+              <option value="current">現在のクリップ</option>
+              <option value="selected">選択したクリップ</option>
+              <option value="all">全クリップ</option>
+            </select>
+            <button id="applyClipSettingsBtn" disabled>現在の設定を適用</button>
           </div>
         </div>
         <div id="kfStrip" class="kf-strip hidden">
@@ -401,6 +427,7 @@
     </div>
   </div>
 
+  <script src="clip-settings.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

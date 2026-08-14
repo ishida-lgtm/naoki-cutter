@@ -20,8 +20,9 @@ enables `panAnimated`, so the shortcut must not require a separate click on the
 `キー` checkbox.
 
 **Multi-clip export selection.** `exportSelectedClipIds` is distinct from the
-single active `selectedClipId`: clip-row `書出` checkboxes choose any number of
-clips for one export, while ordinary selection still controls preview/editing.
+single active `selectedClipId`: clip-row `選択` checkboxes choose any number of
+clips for one export or batch-setting target, while ordinary selection still
+controls preview/editing.
 Export preserves timeline order. A transition is retained only when two picked
 clips were adjacent in the original timeline; skipped gaps join with a cut.
 The lightweight project JSON stores these IDs, stale IDs are pruned on render,
@@ -30,6 +31,24 @@ halves.
 `E` invokes the checked-clips export button only when at least one clip is
 picked and no export is already running; key repeat must remain ignored so one
 keypress cannot open multiple save dialogs.
+
+**Editor training intervals and batch clip settings.** The slim action strip
+below the main toolbar lets the user label a `takeoff`, `catch_paddle`, or
+`travel_paddle` interval without leaving the editor. Start/end buttons use the
+active editing video's absolute source time (including the active comparison
+pane), and `save-training-segment` extracts local derived features through the
+same `/api/training/features` endpoint before merging that event into the
+source's existing verified example. Re-labeling one event replaces only that
+event; it must not erase other event segments for the same source.
+
+Zoom has direct 2x and 3x preset buttons. The `設定の適用先` control copies the
+active clip's current zoom/static pan, pan-animation keyframes, whole-clip
+speed, and speed segments to the current, checkbox-selected, or all clips.
+It deliberately does not copy trim boundaries, source paths, or transitions.
+The pure copy implementation lives in `clip-settings.js` and clips keyframes
+and speed segments to the target clip's local duration. Keep it as the common
+extension point for future batch-applicable clip settings. Its tests live in
+`test/clip-settings.test.js`.
 
 **Review recording and waveforms.** Timeline waveforms are generated in the
 main process with bundled ffmpeg (`audio-waveform`) and cached by source path,
