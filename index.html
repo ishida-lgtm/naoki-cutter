@@ -201,10 +201,13 @@
       <div class="clip-scroll-area">
         <div class="panel-header">
           <h2>クリップ</h2>
-          <label class="select-all-clips" title="一括設定・複数書き出しの対象をまとめて選択">
-            <input id="selectAllClips" type="checkbox" disabled>
-            <span>全クリップ選択</span>
-          </label>
+          <div class="clip-selection-actions">
+            <label class="select-all-clips" title="一括設定・複数書き出しの対象をまとめて選択">
+              <input id="selectAllClips" type="checkbox" disabled>
+              <span>全クリップ選択</span>
+            </label>
+            <button id="deleteSelectedClipsBtn" class="delete-selected-clips" disabled>選択を削除</button>
+          </div>
         </div>
 
         <div class="bulk-transition-row">

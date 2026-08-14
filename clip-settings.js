@@ -20,6 +20,27 @@
     return target;
   }
 
+  function removeSelectedClipsFromTimeline(clips, transitions, selectedIds) {
+    const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
+    const remaining = clips
+      .map((clip, index) => ({ clip, index }))
+      .filter(({ clip }) => !selected.has(clip.id));
+    const nextTransitions = [];
+    for (let i = 1; i < remaining.length; i += 1) {
+      const previousIndex = remaining[i - 1].index;
+      const currentIndex = remaining[i].index;
+      nextTransitions.push(
+        currentIndex === previousIndex + 1
+          ? { ...(transitions[previousIndex] || { type: 'cut', duration: 0.5 }) }
+          : { type: 'cut', duration: 0.5 }
+      );
+    }
+    return { clips: remaining.map(({ clip }) => clip), transitions: nextTransitions };
+  }
+
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
-  if (typeof module !== 'undefined' && module.exports) module.exports = { cloneClipSettingsForTarget };
+  root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { cloneClipSettingsForTarget, removeSelectedClipsFromTimeline };
+  }
 }(typeof globalThis !== 'undefined' ? globalThis : this));

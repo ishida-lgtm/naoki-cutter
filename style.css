@@ -243,6 +243,7 @@ body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
   justify-content: space-between;
   align-items: center;
 }
+.clip-selection-actions { display: flex; align-items: center; gap: 6px; }
 .select-all-clips {
   display: inline-flex;
   align-items: center;
@@ -257,6 +258,12 @@ body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
 }
 .select-all-clips:has(input:disabled) { opacity: .45; cursor: default; }
 .select-all-clips input { margin: 0; }
+.delete-selected-clips {
+  padding: 4px 8px;
+  color: #ffaaa5;
+  border-color: #704245;
+  font-size: 11px;
+}
 h2 { font-size: 15px; margin: 0 0 12px; color: #ddd; }
 
 button {

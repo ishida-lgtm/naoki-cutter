@@ -35,6 +35,11 @@ The clip-panel header checkbox selects or clears every clip at once. It reflects
 an indeterminate state when only some clip-row checkboxes are selected and uses
 the same `exportSelectedClipIds` set, so it affects both batch settings and
 multi-clip export without changing the active preview clip.
+The adjacent delete button removes every checked clip from the editing timeline
+after an explicit confirmation, but never deletes source video files. When the
+deletion makes formerly non-adjacent clips meet, their new transition must be a
+cut; transitions between clips that were already adjacent are preserved. This
+pure timeline rewrite lives in `clip-settings.js` and is covered by tests.
 
 **Editor training intervals and batch clip settings.** The slim action strip
 below the main toolbar supports both interval and point labels without leaving

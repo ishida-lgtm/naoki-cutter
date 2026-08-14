@@ -71,6 +71,7 @@ const SHUTTLE_SPEEDS = [1, 2, 5, 10, 16];
 
 const clipList = document.getElementById('clipList');
 const selectAllClips = document.getElementById('selectAllClips');
+const deleteSelectedClipsBtn = document.getElementById('deleteSelectedClipsBtn');
 const dropZone = document.getElementById('dropZone');
 const addFilesBtn = document.getElementById('addFilesBtn');
 const recordModeBtn = document.getElementById('recordModeBtn');
@@ -965,6 +966,32 @@ selectAllClips.addEventListener('change', () => {
     : 'クリップの一括選択を解除しました';
 });
 
+deleteSelectedClipsBtn.addEventListener('click', () => {
+  const selectedIds = new Set(exportSelectedClipIds);
+  const count = selectedIds.size;
+  if (!count || exporting) return;
+  if (!window.confirm(`選択した${count}クリップをタイムラインから削除しますか？\n元動画ファイルは削除されません。`)) return;
+  pushHistory();
+  const activeClipRemoved = selectedIds.has(selectedClipId);
+  const nextTimeline = removeSelectedClipsFromTimeline(clips, transitions, selectedIds);
+  clips = nextTimeline.clips;
+  transitions = nextTimeline.transitions;
+  selectedIds.forEach((id) => exportSelectedClipIds.delete(id));
+  if (activeClipRemoved) {
+    sequencePlaying = false;
+    selectedClipId = null;
+    loadedPath = null;
+    stopShuttleTimer();
+    previewVideo.pause();
+    previewVideo.removeAttribute('src');
+    previewVideo.load();
+    previewEmpty.style.display = 'flex';
+    syncZoomUI();
+  }
+  render();
+  statusText.textContent = `${count}クリップをタイムラインから削除しました（元動画は残っています）`;
+});
+
 let dragSrcIndex = null;
 
 function render() {
@@ -973,6 +1000,10 @@ function render() {
   selectAllClips.disabled = clips.length === 0 || exporting;
   selectAllClips.checked = allClipsSelected;
   selectAllClips.indeterminate = exportSelectedClipIds.size > 0 && !allClipsSelected;
+  deleteSelectedClipsBtn.disabled = exportSelectedClipIds.size === 0 || exporting;
+  deleteSelectedClipsBtn.textContent = exportSelectedClipIds.size
+    ? `選択した${exportSelectedClipIds.size}件を削除`
+    : '選択を削除';
   clipList.innerHTML = '';
 
   clips.forEach((clip, i) => {
