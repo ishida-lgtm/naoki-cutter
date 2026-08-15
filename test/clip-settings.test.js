@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, comparisonPairFromSelection, removeSelectedClipsFromTimeline } = require('../clip-settings');
+const {
+  cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
+  comparisonPairFromSelection, removeSelectedClipsFromTimeline,
+  clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
+} = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
   const source = {
@@ -91,4 +95,23 @@ test('複数削除後も元から隣接するクリップのつなぎ目を維�
   const result = removeSelectedClipsFromTimeline(clips, transitions, new Set([1, 4]));
   assert.deepEqual(result.clips.map((clip) => clip.id), [2, 3]);
   assert.deepEqual(result.transitions, [{ type: 'dissolve', duration: 2 }]);
+});
+
+test('速度区間とトランジションを含む書き出し時間を計算する', () => {
+  const clips = [
+    { trimStart: 0, trimEnd: 10, speed: 2, speedSegments: [] },
+    { trimStart: 2, trimEnd: 12, speed: 1, speedSegments: [{ start: 0, end: 4, speed: 0.5 }] },
+  ];
+  assert.equal(clipPlaybackDuration(clips[0]), 5);
+  assert.equal(clipPlaybackDuration(clips[1]), 14);
+  assert.equal(sequencePlaybackDuration(clips, [{ type: 'crossfade', duration: 1 }]), 18);
+});
+
+test('4KはフルHDより大きくH.265はH.264より小さく見積もる', () => {
+  const fhd = estimateExportSize({ duration: 60, quality: 'fhd', codec: 'h264', fps: 30 });
+  const fourK = estimateExportSize({ duration: 60, quality: '4k', codec: 'h264', fps: 30 });
+  const hevc = estimateExportSize({ duration: 60, quality: '4k', codec: 'h265', fps: 30 });
+  assert.ok(fourK.bytes > fhd.bytes);
+  assert.ok(hevc.bytes < fourK.bytes);
+  assert.ok(fourK.lowBytes < fourK.bytes && fourK.highBytes > fourK.bytes);
 });

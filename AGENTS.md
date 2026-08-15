@@ -483,6 +483,15 @@ for an export anomaly and found to already default to `false` (a no-op) —
 don't reintroduce it without a concrete reason, it doesn't do anything at
 its default.
 
+**Pre-export size estimate.** The export sidebar shows an always-live estimated
+file size for the complete timeline and, when clip checkboxes are active, a
+separate estimate for the checked-clips export. `clip-settings.js` owns the
+pure duration and size calculations: duration includes whole-clip speed,
+speed segments, and non-cut transition overlap. The bitrate model reflects
+FHD/4K, 30/60fps, H.264/H.265, and 192 kbps audio. Because production export
+uses quality-based VideoToolbox encoding, the UI must keep calling this a
+prediction and warn that actual size varies with image detail and motion.
+
 **Cuts must use concat, never a tiny xfade.** A cut was previously represented
 as a 0.04-second xfade/acrossfade. At 30fps that is 1.2 frames, so fractional-
 frame rounding accumulated across joins. On a real ten-clip export, the third

@@ -100,6 +100,9 @@ const qualityFhdBtn = document.getElementById('qualityFhdBtn');
 const quality4kBtn = document.getElementById('quality4kBtn');
 const codecSelect = document.getElementById('codecSelect');
 const fpsSelect = document.getElementById('fpsSelect');
+const exportSizeMain = document.getElementById('exportSizeMain');
+const exportSizeSelectedRow = document.getElementById('exportSizeSelectedRow');
+const exportSizeSelected = document.getElementById('exportSizeSelected');
 const comparisonBox = document.getElementById('comparisonBox');
 const comparePanelToggleBtn = document.getElementById('comparePanelToggleBtn');
 const comparePanelCloseBtn = document.getElementById('comparePanelCloseBtn');
@@ -1175,6 +1178,8 @@ function render() {
       tRow.querySelector('.t-duration').addEventListener('change', (e) => {
         pushHistory();
         transitions[i].duration = Math.max(0.1, parseFloat(e.target.value) || 0.5);
+        updateExportSizeEstimate();
+        scheduleAutosave();
       });
       const joinBtn = tRow.querySelector('.join-btn');
       if (joinBtn) joinBtn.addEventListener('click', () => joinWithNext(i));
@@ -1188,6 +1193,7 @@ function render() {
   exportSelectedBtn.textContent = exportSelectionCount
     ? `選択した${exportSelectionCount}クリップを書き出す`
     : '書き出すクリップを選択';
+  updateExportSizeEstimate();
   const hasSelectedClip = Boolean(selectedClip());
   [zoom2xBtn, zoom3xBtn, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
     settingScope, applyClipSettingsBtn].forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
@@ -4394,6 +4400,70 @@ function updateExportLabel() {
   qualityFhdBtn.classList.toggle('active', qualitySelect.value === 'fhd');
   quality4kBtn.classList.toggle('active', qualitySelect.value === '4k');
   exportBtn.textContent = `${qualityLabel}(${orientationLabel})で書き出す`;
+  updateExportSizeEstimate();
+}
+
+function selectedExportTimeline() {
+  const picked = clips
+    .map((clip, index) => ({ clip, index }))
+    .filter(({ clip }) => exportSelectedClipIds.has(clip.id));
+  const pickedTransitions = [];
+  for (let index = 1; index < picked.length; index += 1) {
+    const previousIndex = picked[index - 1].index;
+    const currentIndex = picked[index].index;
+    pickedTransitions.push(
+      currentIndex === previousIndex + 1
+        ? { ...transitions[previousIndex] }
+        : { type: 'cut', duration: 0.5 }
+    );
+  }
+  return { clips: picked.map(({ clip }) => clip), transitions: pickedTransitions };
+}
+
+function formatEstimateBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '約0MB';
+  const mb = bytes / 1000 / 1000;
+  if (mb < 1000) return `約${Math.max(1, Math.round(mb))}MB`;
+  const gb = mb / 1000;
+  return `約${gb >= 10 ? Math.round(gb) : gb.toFixed(1)}GB`;
+}
+
+function formatEstimateDuration(seconds) {
+  const rounded = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const secs = rounded % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+    : `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function estimateTimelineLabel(timelineClips, timelineTransitions) {
+  const duration = sequencePlaybackDuration(timelineClips, timelineTransitions);
+  const estimate = estimateExportSize({
+    duration,
+    quality: qualitySelect.value,
+    codec: codecSelect.value,
+    fps: Number(fpsSelect.value),
+  });
+  return `${formatEstimateBytes(estimate.bytes)}（${formatEstimateDuration(duration)}）`;
+}
+
+function updateExportSizeEstimate() {
+  if (!exportSizeMain) return;
+  if (!clips.length) {
+    exportSizeMain.textContent = '動画を追加すると表示します';
+    exportSizeSelectedRow.classList.add('hidden');
+    return;
+  }
+  exportSizeMain.textContent = estimateTimelineLabel(clips, transitions);
+  const selectedTimeline = selectedExportTimeline();
+  if (selectedTimeline.clips.length) {
+    exportSizeSelected.textContent = `${selectedTimeline.clips.length}本・${estimateTimelineLabel(selectedTimeline.clips, selectedTimeline.transitions)}`;
+    exportSizeSelectedRow.classList.remove('hidden');
+  } else {
+    exportSizeSelectedRow.classList.add('hidden');
+  }
 }
 orientationSelect.addEventListener('change', () => {
   updateExportLabel();
@@ -4407,6 +4477,8 @@ function selectExportQuality(quality) {
 qualityFhdBtn.addEventListener('click', () => selectExportQuality('fhd'));
 quality4kBtn.addEventListener('click', () => selectExportQuality('4k'));
 qualitySelect.addEventListener('change', updateExportLabel);
+codecSelect.addEventListener('change', updateExportSizeEstimate);
+fpsSelect.addEventListener('change', updateExportSizeEstimate);
 updateExportLabel();
 updatePreviewBoxAspect();
 

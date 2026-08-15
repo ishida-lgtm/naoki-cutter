@@ -69,12 +69,96 @@
     return { clips: remaining.map(({ clip }) => clip), transitions: nextTransitions };
   }
 
+  function partitionSpeedSegments(trimDuration, segments, baseSpeed) {
+    const epsilon = 0.001;
+    const safeBaseSpeed = Number(baseSpeed) > 0 ? Number(baseSpeed) : 1;
+    const cleaned = (segments || [])
+      .map((segment) => ({
+        start: Math.max(0, Math.min(trimDuration, Number(segment.start) || 0)),
+        end: Math.max(0, Math.min(trimDuration, Number(segment.end) || 0)),
+        speed: Number(segment.speed) > 0 ? Number(segment.speed) : 1,
+      }))
+      .filter((segment) => segment.end - segment.start > epsilon)
+      .sort((a, b) => a.start - b.start);
+    const merged = [];
+    cleaned.forEach((segment) => {
+      if (merged.length && segment.start < merged[merged.length - 1].end) {
+        merged[merged.length - 1].end = Math.max(
+          merged[merged.length - 1].start + epsilon,
+          Math.min(merged[merged.length - 1].end, segment.start)
+        );
+      }
+      merged.push({ ...segment });
+    });
+    const parts = [];
+    let cursor = 0;
+    merged.forEach((segment) => {
+      if (segment.start - cursor > epsilon) {
+        parts.push({ start: cursor, end: segment.start, speed: safeBaseSpeed });
+      }
+      parts.push(segment);
+      cursor = segment.end;
+    });
+    if (trimDuration - cursor > epsilon) {
+      parts.push({ start: cursor, end: trimDuration, speed: safeBaseSpeed });
+    }
+    if (!parts.length) parts.push({ start: 0, end: trimDuration, speed: safeBaseSpeed });
+    return parts;
+  }
+
+  function clipPlaybackDuration(clip) {
+    const trimDuration = Math.max(0, Number(clip.trimEnd) - Number(clip.trimStart));
+    const baseSpeed = Number(clip.speed) > 0 ? Number(clip.speed) : 1;
+    if (!Array.isArray(clip.speedSegments) || !clip.speedSegments.length) {
+      return trimDuration / baseSpeed;
+    }
+    return partitionSpeedSegments(trimDuration, clip.speedSegments, baseSpeed)
+      .reduce((total, part) => total + (part.end - part.start) / part.speed, 0);
+  }
+
+  function sequencePlaybackDuration(clips, transitions) {
+    if (!Array.isArray(clips) || !clips.length) return 0;
+    let duration = clipPlaybackDuration(clips[0]);
+    for (let index = 1; index < clips.length; index += 1) {
+      const transition = transitions?.[index - 1] || { type: 'cut', duration: 0 };
+      duration += clipPlaybackDuration(clips[index]);
+      if (transition.type !== 'cut') duration -= Math.max(Number(transition.duration) || 0, 0.04);
+    }
+    return Math.max(0, duration);
+  }
+
+  function estimateExportSize({ duration, quality = 'fhd', codec = 'h264', fps = 30 }) {
+    const safeDuration = Math.max(0, Number(duration) || 0);
+    const rates = {
+      fhd: { 30: 12, 60: 18 },
+      '4k': { 30: 35, 60: 52 },
+    };
+    const fpsKey = Number(fps) >= 50 ? 60 : 30;
+    const h264VideoMbps = rates[quality]?.[fpsKey] || rates.fhd[30];
+    const videoMbps = codec === 'h265' ? h264VideoMbps * 0.65 : h264VideoMbps;
+    const totalMbps = videoMbps + 0.192;
+    const bytes = safeDuration * totalMbps * 1000 * 1000 / 8;
+    return {
+      bytes,
+      lowBytes: bytes * 0.7,
+      highBytes: bytes * 1.35,
+      duration: safeDuration,
+    };
+  }
+
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
   root.cloneZoomForTarget = cloneZoomForTarget;
   root.upsertPanKeyframe = upsertPanKeyframe;
   root.comparisonPairFromSelection = comparisonPairFromSelection;
   root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
+  root.clipPlaybackDuration = clipPlaybackDuration;
+  root.sequencePlaybackDuration = sequencePlaybackDuration;
+  root.estimateExportSize = estimateExportSize;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, comparisonPairFromSelection, removeSelectedClipsFromTimeline };
+    module.exports = {
+      cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
+      comparisonPairFromSelection, removeSelectedClipsFromTimeline,
+      clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
+    };
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this));

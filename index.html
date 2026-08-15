@@ -317,6 +317,11 @@
           <option value="60">60fps</option>
         </select>
       </div>
+      <div id="exportSizeEstimate" class="export-size-estimate" aria-live="polite">
+        <div><strong>予想ファイルサイズ</strong><span id="exportSizeMain">動画を追加すると表示します</span></div>
+        <div id="exportSizeSelectedRow" class="hidden"><strong>選択中</strong><span id="exportSizeSelected"></span></div>
+        <small id="exportSizeHint">映像の内容により実際の容量は前後します</small>
+      </div>
       <button id="exportBtn" class="primary" disabled>書き出す</button>
       <button id="exportSelectedBtn" class="secondary-export" disabled title="チェックしたクリップを書き出す（E）">書き出すクリップをチェック</button>
       <button id="analyzeExportBtn" class="analyze-export-btn" disabled title="直近に書き出した動画をsurfing-analyzerへ送る">🔍 解析アプリへ送る</button>

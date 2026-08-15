@@ -1244,6 +1244,24 @@ body.timeline-trimming * {
   position: relative;
   overflow: hidden;
 }
+.export-size-estimate {
+  margin: 12px 0;
+  padding: 10px 11px;
+  border: 1px solid #3d4651;
+  border-radius: 7px;
+  background: #20252b;
+}
+.export-size-estimate > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 2px 0;
+}
+.export-size-estimate strong { font-size: 12px; color: #b8c4d1; }
+.export-size-estimate span { color: #ffb340; font-size: 15px; font-weight: 700; text-align: right; }
+.export-size-estimate small { display: block; margin-top: 5px; color: #777f88; font-size: 10px; }
+.export-size-estimate .hidden { display: none; }
 .progress-wrap.hidden { display: none; }
 .progress-bar {
   background: #0a84ff;
