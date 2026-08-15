@@ -174,6 +174,11 @@ reveals clip selection, sync, audio, and export settings; `編集を開始` then
 enters the full-window comparison editor. Returning to one-screen editing
 collapses the configuration again. The existing `@` shortcut still opens the
 full comparison editor directly when two valid clips are available.
+The full-window comparison editor's close control is separately positioned at
+the top right so it remains visible on narrow windows. Do not put it back at
+the end of the crowded bottom control row: overflow there previously made the
+mouse exit unreachable. `Escape` and `@` remain equivalent exit shortcuts,
+and the bottom control row may scroll horizontally when necessary.
 
 **Automatic edit recovery.** Renderer changes are debounced for 1.5 seconds
 and saved as lightweight JSON through main-process IPC. `autosave-store.js`
