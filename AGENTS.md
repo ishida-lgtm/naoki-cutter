@@ -69,6 +69,10 @@ The pure copy implementation lives in `clip-settings.js` and clips keyframes
 and speed segments to the target clip's local duration. Keep it as the common
 extension point for future batch-applicable clip settings. Its tests live in
 `test/clip-settings.test.js`.
+The adjacent `Zoomだけ選択へ` action copies only `clip.zoom` from the active
+clip to checkbox-selected clips. It must not overwrite per-clip pan position,
+pan keyframes, speed, speed segments, trims, paths, or transitions. This is the
+safe path for selecting all clips and making only their magnification uniform.
 
 **Review recording and waveforms.** Timeline waveforms are generated in the
 main process with bundled ffmpeg (`audio-waveform`) and cached by source path,

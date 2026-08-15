@@ -20,6 +20,11 @@
     return target;
   }
 
+  function cloneZoomForTarget(source, target) {
+    target.zoom = source.zoom;
+    return target;
+  }
+
   function removeSelectedClipsFromTimeline(clips, transitions, selectedIds) {
     const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
     const remaining = clips
@@ -39,8 +44,9 @@
   }
 
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
+  root.cloneZoomForTarget = cloneZoomForTarget;
   root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { cloneClipSettingsForTarget, removeSelectedClipsFromTimeline };
+    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, removeSelectedClipsFromTimeline };
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this));

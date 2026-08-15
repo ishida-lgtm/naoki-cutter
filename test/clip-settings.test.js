@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cloneClipSettingsForTarget, removeSelectedClipsFromTimeline } = require('../clip-settings');
+const { cloneClipSettingsForTarget, cloneZoomForTarget, removeSelectedClipsFromTimeline } = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
   const source = {
@@ -29,6 +29,19 @@ test('コピー後の配列は元クリップと共有しない', () => {
   target.speedSegments[0].speed = 2;
   assert.equal(source.panKeyframes[0].x, 0.4);
   assert.equal(source.speedSegments[0].speed, 0.5);
+});
+
+test('Zoomだけの一括反映では位置・キーフレーム・速度を変更しない', () => {
+  const source = { zoom: 3, zoomX: 0.2, speed: 2 };
+  const target = {
+    zoom: 1, zoomX: 0.8, zoomY: 0.7, panAnimated: true,
+    panKeyframes: [{ t: 1, x: 0.8, y: 0.7 }], speed: 0.5,
+    speedSegments: [{ start: 0, end: 2, speed: 0.25 }],
+  };
+  const before = JSON.parse(JSON.stringify(target));
+  cloneZoomForTarget(source, target);
+  assert.equal(target.zoom, 3);
+  assert.deepEqual({ ...target, zoom: before.zoom }, before);
 });
 
 test('複数クリップ削除後の新しい隙間はカットで接続する', () => {

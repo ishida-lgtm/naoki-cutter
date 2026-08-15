@@ -1,6 +1,6 @@
 {
   "name": "naoki-cutter",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "つなぐ・切る・トランジション・4K書き出しに特化したシンプル動画編集アプリ",
   "main": "main.js",
   "scripts": {

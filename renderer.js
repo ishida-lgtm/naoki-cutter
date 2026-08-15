@@ -197,6 +197,7 @@ const editTakeoffShape = document.getElementById('editTakeoffShape');
 const editTakeoffFootwork = document.getElementById('editTakeoffFootwork');
 const editTakeoffType = document.getElementById('editTakeoffType');
 const settingScope = document.getElementById('settingScope');
+const applyZoomToSelectedBtn = document.getElementById('applyZoomToSelectedBtn');
 const applyClipSettingsBtn = document.getElementById('applyClipSettingsBtn');
 const speedSelect = document.getElementById('speedSelect');
 const speedSegStartBtn = document.getElementById('speedSegStartBtn');
@@ -1135,6 +1136,7 @@ function render() {
   const hasSelectedClip = Boolean(selectedClip());
   [zoom2xBtn, zoom3xBtn, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
     settingScope, applyClipSettingsBtn].forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
+  applyZoomToSelectedBtn.disabled = !hasSelectedClip || exporting || exportSelectedClipIds.size === 0;
   [editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType]
     .forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
   syncEditTrainingEventUI();
@@ -2686,6 +2688,21 @@ applyClipSettingsBtn.addEventListener('click', () => {
   syncZoomUI();
   render();
   statusText.textContent = `現在のZoom・位置・キーフレーム・速度設定を${targets.length}クリップに適用しました`;
+});
+
+applyZoomToSelectedBtn.addEventListener('click', () => {
+  const source = selectedClip();
+  if (!source) return;
+  const targets = clips.filter((clip) => exportSelectedClipIds.has(clip.id));
+  if (!targets.length) {
+    statusText.textContent = 'Zoomを反映するクリップを「選択」にチェックしてください';
+    return;
+  }
+  pushHistory();
+  targets.forEach((target) => cloneZoomForTarget(source, target));
+  syncZoomUI();
+  render();
+  statusText.textContent = `現在のZoom ${Number(source.zoom || 1).toFixed(1)}倍を選択した${targets.length}クリップに反映しました`;
 });
 
 // ---- Per-segment speed (speed ramping within a single clip) ----
