@@ -87,6 +87,7 @@ const projectNameInput = document.getElementById('projectNameInput');
 const saveProjectBtn = document.getElementById('saveProjectBtn');
 const savedProjectSelect = document.getElementById('savedProjectSelect');
 const loadProjectBtn = document.getElementById('loadProjectBtn');
+const deleteSelectedProjectBtn = document.getElementById('deleteSelectedProjectBtn');
 const deleteProjectsBtn = document.getElementById('deleteProjectsBtn');
 const orientationSelect = document.getElementById('orientationSelect');
 const qualitySelect = document.getElementById('qualitySelect');
@@ -3817,6 +3818,7 @@ async function refreshSavedProjects(preferredId = currentProjectId) {
         : savedProjectSummaries[0].id;
     }
     loadProjectBtn.disabled = !savedProjectSelect.value;
+    deleteSelectedProjectBtn.disabled = !savedProjectSelect.value;
     // This button also clears cache, so it remains useful with no saved projects.
     deleteProjectsBtn.disabled = false;
   } catch (e) {
@@ -3848,6 +3850,7 @@ saveProjectBtn.addEventListener('click', async () => {
 
 savedProjectSelect.addEventListener('change', () => {
   loadProjectBtn.disabled = !savedProjectSelect.value;
+  deleteSelectedProjectBtn.disabled = !savedProjectSelect.value;
 });
 
 loadProjectBtn.addEventListener('click', async () => {
@@ -3931,6 +3934,29 @@ loadProjectBtn.addEventListener('click', async () => {
     statusText.textContent = `保存データを開けませんでした: ${e.message}`;
   } finally {
     loadProjectBtn.disabled = !savedProjectSelect.value;
+  }
+});
+
+deleteSelectedProjectBtn.addEventListener('click', async () => {
+  const id = savedProjectSelect.value;
+  const selected = savedProjectSummaries.find((project) => project.id === id);
+  if (!id || !selected) return;
+  const ok = window.confirm(
+    `保存データ「${selected.name}」だけを削除しますか？\n\n現在の編集内容は画面に残ります。元動画と書き出し済み動画は削除されません。`
+  );
+  if (!ok) return;
+  deleteSelectedProjectBtn.disabled = true;
+  deleteSelectedProjectBtn.textContent = '削除中…';
+  try {
+    await window.api.deleteProject(id);
+    if (currentProjectId === id) currentProjectId = null;
+    await refreshSavedProjects(null);
+    statusText.textContent = `保存データ「${selected.name}」だけを削除しました。現在の編集内容と元動画は残っています。`;
+  } catch (e) {
+    statusText.textContent = `選択した保存データを削除できませんでした: ${e.message}`;
+  } finally {
+    deleteSelectedProjectBtn.textContent = '選択を削除';
+    deleteSelectedProjectBtn.disabled = !savedProjectSelect.value;
   }
 });
 

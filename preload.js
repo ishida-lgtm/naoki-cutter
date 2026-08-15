@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   listProjects: () => ipcRenderer.invoke('list-projects'),
   saveProject: (payload) => ipcRenderer.invoke('save-project', payload),
   loadProject: (id) => ipcRenderer.invoke('load-project', id),
+  deleteProject: (id) => ipcRenderer.invoke('delete-project', id),
   deleteProjectsAndCache: () => ipcRenderer.invoke('delete-projects-and-cache'),
   clearCache: () => ipcRenderer.invoke('clear-cache'),
   moveCursor: (position) => ipcRenderer.invoke('move-cursor', position),

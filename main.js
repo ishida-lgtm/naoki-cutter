@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const { createUpdater } = require('./updater');
+const { deleteProjectFile } = require('./project-store');
 
 // Bundled in bin/ (with its dylib deps rewritten to @executable_path/libs via
 // dylibbundler) so the app runs on any Mac without needing Homebrew installed —
@@ -843,6 +844,14 @@ ipcMain.handle('load-project', async (event, id) => {
   }
   const missingPaths = [...new Set(doc.data.clips.map((c) => c.path).filter((p) => !p || !fs.existsSync(p)))];
   return { project: doc, missingPaths };
+});
+
+ipcMain.handle('delete-project', async (event, id) => {
+  const target = projectFilePath(id);
+  // Delete only this app-owned project JSON. Never follow media paths stored
+  // inside it, and never touch source videos, exports, other saves, or cache.
+  const freedBytes = deleteProjectFile(target);
+  return { id, freedBytes };
 });
 
 ipcMain.handle('delete-projects-and-cache', async () => {

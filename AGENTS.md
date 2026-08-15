@@ -235,6 +235,10 @@ settings; source media is referenced by absolute path and is never copied.
 The UI can delete every saved project plus Electron's temporary cache in one
 action, but that cleanup deliberately never follows media paths and never
 touches source or exported videos.
+The saved-project dropdown also has a per-save delete action. It removes only
+the selected project JSON, leaves the currently open edit in memory, and never
+clears cache or deletes source/exported videos. If the open project's save is
+deleted, `currentProjectId` is cleared so the next Save creates a new record.
 
 **Everything downstream keys off `panKeyframes[].t` and
 `speedSegments[].start/end` being clip-local time (0 at `trimStart`)** — not

@@ -205,9 +205,18 @@ body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
 .project-save-btn:hover { background: #1d7bc4; }
 .project-load-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 5px;
   margin-top: 8px;
+}
+.project-delete-selected-btn {
+  color: #ffaaa4;
+  background: #382a2b;
+  border-color: #5b3b3d;
+}
+.project-delete-selected-btn:hover {
+  background: #493032;
+  border-color: #75484b;
 }
 .project-load-row select {
   min-width: 0;
