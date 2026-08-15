@@ -51,6 +51,14 @@
     return pair.length === 2 ? pair : null;
   }
 
+  function timelineSelectionAfterClick(selectedIds, clickedId, additive) {
+    const next = new Set(selectedIds || []);
+    if (!additive) return new Set([clickedId]);
+    if (next.has(clickedId)) next.delete(clickedId);
+    else next.add(clickedId);
+    return next;
+  }
+
   function removeSelectedClipsFromTimeline(clips, transitions, selectedIds) {
     const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
     const remaining = clips
@@ -150,6 +158,7 @@
   root.cloneZoomForTarget = cloneZoomForTarget;
   root.upsertPanKeyframe = upsertPanKeyframe;
   root.comparisonPairFromSelection = comparisonPairFromSelection;
+  root.timelineSelectionAfterClick = timelineSelectionAfterClick;
   root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
   root.clipPlaybackDuration = clipPlaybackDuration;
   root.sequencePlaybackDuration = sequencePlaybackDuration;
@@ -157,7 +166,7 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
-      comparisonPairFromSelection, removeSelectedClipsFromTimeline,
+      comparisonPairFromSelection, timelineSelectionAfterClick, removeSelectedClipsFromTimeline,
       clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
     };
   }

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
   comparisonPairFromSelection, removeSelectedClipsFromTimeline,
-  clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
+  timelineSelectionAfterClick, clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
 } = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
@@ -71,6 +71,12 @@ test('タイムライン順で選択した2クリップを比較ペアにする'
   assert.deepEqual(comparisonPairFromSelection(clips, new Set([3, 1])), [clips[0], clips[2]]);
   assert.equal(comparisonPairFromSelection(clips, new Set([1])), null);
   assert.equal(comparisonPairFromSelection(clips, new Set([1, 2, 3])), null);
+});
+
+test('タイムラインの通常クリックは単独選択、Shiftクリックは追加・解除する', () => {
+  assert.deepEqual([...timelineSelectionAfterClick(new Set([1, 2]), 3, false)], [3]);
+  assert.deepEqual([...timelineSelectionAfterClick(new Set([1]), 2, true)], [1, 2]);
+  assert.deepEqual([...timelineSelectionAfterClick(new Set([1, 2]), 1, true)], [2]);
 });
 
 test('複数クリップ削除後の新しい隙間はカットで接続する', () => {

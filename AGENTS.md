@@ -57,6 +57,14 @@ after an explicit confirmation, but never deletes source video files. When the
 deletion makes formerly non-adjacent clips meet, their new transition must be a
 cut; transitions between clips that were already adjacent are preserved. This
 pure timeline rewrite lives in `clip-settings.js` and is covered by tests.
+Clicking a clip directly in the timeline also controls this same
+`exportSelectedClipIds` set: a plain click replaces the set with that one clip,
+while Shift-click toggles the clicked clip without clearing the others. The
+active preview still follows the clicked clip and seeks to the clicked time.
+Selected export/batch targets show an orange check badge on the timeline, so
+the user does not need to scroll down to the clip-row checkboxes. Trim handles
+and transition markers must continue to stop propagation and never change this
+selection.
 
 **Editor training intervals and batch clip settings.** The slim action strip
 below the main toolbar supports both interval and point labels without leaving

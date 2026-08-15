@@ -1702,7 +1702,9 @@ function renderTimeline() {
 
   layout.forEach((item, i) => {
     const block = document.createElement('div');
-    block.className = 'tl-clip' + (item.clip.id === selectedClipId ? ' selected' : '');
+    block.className = 'tl-clip'
+      + (item.clip.id === selectedClipId ? ' selected' : '')
+      + (exportSelectedClipIds.has(item.clip.id) ? ' export-selected' : '');
     block.style.width = `${item.width}px`;
     block.title = `${item.clip.name}\n${fmtTime(item.dur)}\n中央をドラッグ：並べ替え\n左右端をドラッグ：長さ調整`;
     const label = document.createElement('span');
@@ -1782,7 +1784,12 @@ timelineTrack.addEventListener('click', (e) => {
   const target = timelineTargetFromClientX(e.clientX);
   if (!target) return;
   sequencePlaying = false;
+  exportSelectedClipIds = timelineSelectionAfterClick(exportSelectedClipIds, target.clipId, e.shiftKey);
   selectClip(target.clipId, { seekTo: target.time });
+  const count = exportSelectedClipIds.size;
+  statusText.textContent = e.shiftKey
+    ? `${count}クリップを選択中`
+    : '1クリップを選択しました（Shift＋クリックで複数選択）';
 });
 
 timelineTrack.addEventListener('mousemove', (e) => {
