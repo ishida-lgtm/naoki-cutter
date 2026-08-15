@@ -164,6 +164,13 @@ changes only `compareStartA`/`compareStartB`, marks both inputs edited, and
 leaves source media, trims, keyframes, and clips untouched. The old ±1-frame
 buttons remain the final manual adjustment path.
 
+The right-sidebar two-screen configuration is collapsed by default so it does
+not occupy the ordinary editing workspace. Its slim `2画面で編集` launcher
+reveals clip selection, sync, audio, and export settings; `編集を開始` then
+enters the full-window comparison editor. Returning to one-screen editing
+collapses the configuration again. The existing `@` shortcut still opens the
+full comparison editor directly when two valid clips are available.
+
 `main.js` makes at most a 50-second, 640px/6fps/no-audio proxy for each side in
 the Electron temp directory. A clip of 60 seconds or less uses its complete
 trimmed range; longer clips search from five seconds before the current

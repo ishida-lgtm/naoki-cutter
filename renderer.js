@@ -95,6 +95,9 @@ const qualityFhdBtn = document.getElementById('qualityFhdBtn');
 const quality4kBtn = document.getElementById('quality4kBtn');
 const codecSelect = document.getElementById('codecSelect');
 const fpsSelect = document.getElementById('fpsSelect');
+const comparisonBox = document.getElementById('comparisonBox');
+const comparePanelToggleBtn = document.getElementById('comparePanelToggleBtn');
+const comparePanelCloseBtn = document.getElementById('comparePanelCloseBtn');
 const compareClipASelect = document.getElementById('compareClipASelect');
 const compareClipBSelect = document.getElementById('compareClipBSelect');
 const compareStartA = document.getElementById('compareStartA');
@@ -1205,14 +1208,20 @@ function renderComparisonControls() {
     compareVideoB.pause();
     comparisonEditor.classList.add('hidden');
     previewVideoBox.classList.remove('comparison-active');
+    setComparisonPanelOpen(false);
   }
   comparePreviewBtn.disabled = !valid || exporting;
   compareExportBtn.disabled = !valid || exporting;
   compareAutoSyncBtn.disabled = !valid || exporting || comparisonSyncing;
   compareAutoSyncEditorBtn.disabled = !valid || exporting || comparisonSyncing;
-  comparePreviewBtn.textContent = comparisonMode ? '1画面編集へ戻る' : '2画面で編集';
+  comparePreviewBtn.textContent = comparisonMode ? '1画面編集へ戻る' : '編集を開始';
   if (a && !compareStartA.dataset.edited) compareStartA.value = a.trimStart.toFixed(3);
   if (b && !compareStartB.dataset.edited) compareStartB.value = b.trimStart.toFixed(3);
+}
+
+function setComparisonPanelOpen(open) {
+  comparisonBox.classList.toggle('hidden', !open);
+  comparePanelToggleBtn.classList.toggle('hidden', open);
 }
 
 function markComparisonStartChanged(input, clip) {
@@ -1330,6 +1339,7 @@ function closeComparisonPreview() {
   compareVideoB.pause();
   comparisonEditor.classList.add('hidden');
   previewVideoBox.classList.remove('comparison-active');
+  setComparisonPanelOpen(false);
   renderComparisonControls();
   if (activeClip) selectClip(activeClip.id, { seekTo: activeTime });
 }
@@ -1400,6 +1410,8 @@ async function autoSyncComparison() {
 
 compareAutoSyncBtn.addEventListener('click', autoSyncComparison);
 compareAutoSyncEditorBtn.addEventListener('click', autoSyncComparison);
+comparePanelToggleBtn.addEventListener('click', () => setComparisonPanelOpen(true));
+comparePanelCloseBtn.addEventListener('click', () => setComparisonPanelOpen(false));
 comparePreviewBtn.addEventListener('click', openComparisonPreview);
 compareCloseBtn.addEventListener('click', closeComparisonPreview);
 comparePlayBtn.addEventListener('click', toggleComparisonPlayback);

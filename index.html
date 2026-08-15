@@ -228,8 +228,12 @@
     </section>
 
     <section class="export-panel">
-      <div class="comparison-box">
-        <h2>2画面比較</h2>
+      <button id="comparePanelToggleBtn" class="compare-panel-toggle">2画面で編集</button>
+      <div id="comparisonBox" class="comparison-box hidden">
+        <div class="comparison-box-header">
+          <h2>2画面比較</h2>
+          <button id="comparePanelCloseBtn" class="compare-panel-close" title="2画面比較の設定をしまう">しまう</button>
+        </div>
         <p class="project-hint">横動画は左右、縦動画は上下に並びます。</p>
         <label>左／上<select id="compareClipASelect"><option value="">動画を選択</option></select></label>
         <div class="compare-sync-row">
@@ -259,7 +263,7 @@
           <option value="none">なし</option>
         </select></label>
         <div class="compare-actions">
-          <button id="comparePreviewBtn" disabled title="2画面編集を開く／閉じる（@）">2画面で編集</button>
+          <button id="comparePreviewBtn" disabled title="2画面編集を開く／閉じる（@）">編集を開始</button>
           <button id="compareExportBtn" disabled>比較動画を書き出す</button>
         </div>
       </div>

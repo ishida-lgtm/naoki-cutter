@@ -1150,6 +1150,19 @@ body.timeline-trimming * {
   border-radius: 8px;
   background: #202023;
 }
+.compare-panel-toggle {
+  width: 100%;
+  margin-bottom: 18px;
+  padding: 10px 12px;
+  color: #e9e9eb;
+  border-color: #55555a;
+  background: #29292d;
+  font-weight: 600;
+}
+.compare-panel-toggle:hover { background: #343439; border-color: #696970; }
+.comparison-box-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.comparison-box-header h2 { margin: 0; }
+.compare-panel-close { padding: 4px 8px; color: #aaaab0; font-size: 10px; }
 .comparison-box > label { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
 .comparison-box select, .comparison-box input {
   padding: 6px 8px;
