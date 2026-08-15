@@ -13,6 +13,17 @@ the user whether they also want a keyboard shortcut for it. Do this at handoff
 even when the feature is already reachable by mouse; do not silently invent a
 key unless the user has specified one.
 
+**Local app replacement safety:** when the user says `入れ替えて`, do not
+immediately quit the running app. First allow the 1.5-second autosave debounce
+to finish, then verify that
+`/Users/ishidanaoki/Library/Application Support/naoki-cutter/autosaves/latest.json`
+exists, parses as valid JSON, and contains the current editing clips before
+replacing `/Applications/Naoki Cutter.app`. If an edit is present but that
+verification fails, stop the replacement and report the save failure. After a
+successful replacement, explicitly report `編集途中の内容を自動保存して入れ替えました`.
+This is separate from the in-app GitHub updater, whose renderer already awaits
+`flushAutosave()` before starting replacement.
+
 The keyboard `+` / `;` key (the physical key immediately to the right of `L` on
 the user's Japanese keyboard, with or without Shift) invokes the same
 keyframe-add path as the toolbar `＋` button. Adding a keyframe automatically
