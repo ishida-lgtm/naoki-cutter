@@ -1956,16 +1956,14 @@ function getEffectivePan(clip, localT) {
 }
 
 function upsertKeyframeAt(clip, localT, x, y) {
-  if (!clip.panKeyframes) clip.panKeyframes = [];
-  const t = Math.max(0, localT);
-  const existing = clip.panKeyframes.find((k) => Math.abs(k.t - t) < 0.15);
-  if (existing) {
-    existing.x = x;
-    existing.y = y;
-  } else {
-    clip.panKeyframes.push({ t, x, y });
-    clip.panKeyframes.sort((a, b) => a.t - b.t);
-  }
+  return upsertPanKeyframe(clip, localT, x, y);
+}
+
+function recordPanMoveAsKeyframe(clip, localT, x, y) {
+  const result = upsertKeyframeAt(clip, localT, x, y);
+  panAnimatedToggle.checked = true;
+  renderKeyframeMarkers();
+  return result;
 }
 
 // The preview box's aspect ratio is fixed to whatever orientation is currently
@@ -2855,8 +2853,9 @@ removeKeyframeBtn.addEventListener('click', () => {
 // (already-transformed) box, not the source frame, so it has to be mapped back
 // through the current zoom/origin — otherwise repositioning drifts wrong once
 // zoom != 1. Dragging pans continuously using the same inverse-transform math.
-// When keyframe animation is on, both write to the keyframe nearest the playhead
-// (creating one there if needed) instead of the clip's static pan.
+// Every manual pan automatically enables animation and writes a keyframe at the
+// playhead. Moving the same moment again updates that point instead of creating
+// a dense set of duplicates. This applies to one- and two-screen editing.
 let panDrag = null;
 let dragJustHappened = false;
 let trackModeActive = false;
@@ -2919,13 +2918,7 @@ document.addEventListener('mousemove', (e) => {
   const sourcePoint = previewToSourcePoint(clip, startPoint.x - dx / zoom, startPoint.y - dy / zoom);
   const nx = Math.min(1, Math.max(0, sourcePoint.x));
   const ny = Math.min(1, Math.max(0, sourcePoint.y));
-  if (clip.panAnimated) {
-    upsertKeyframeAt(clip, getLocalT(clip), nx, ny);
-    renderKeyframeMarkers();
-  } else {
-    clip.zoomX = nx;
-    clip.zoomY = ny;
-  }
+  recordPanMoveAsKeyframe(clip, getLocalT(clip), nx, ny);
   applyPreviewZoom();
 });
 
@@ -2971,13 +2964,7 @@ previewVideoBox.addEventListener('click', (e) => {
   }
 
   pushHistory();
-  if (clip.panAnimated) {
-    upsertKeyframeAt(clip, getLocalT(clip), nx, ny);
-    renderKeyframeMarkers();
-  } else {
-    clip.zoomX = nx;
-    clip.zoomY = ny;
-  }
+  recordPanMoveAsKeyframe(clip, getLocalT(clip), nx, ny);
   applyPreviewZoom();
 });
 
@@ -3038,13 +3025,7 @@ document.addEventListener('mousemove', (event) => {
   );
   const nx = Math.min(1, Math.max(0, sourcePoint.x));
   const ny = Math.min(1, Math.max(0, sourcePoint.y));
-  if (clip.panAnimated) {
-    upsertKeyframeAt(clip, comparisonPanDrag.video.currentTime - clip.trimStart, nx, ny);
-    renderKeyframeMarkers();
-  } else {
-    clip.zoomX = nx;
-    clip.zoomY = ny;
-  }
+  recordPanMoveAsKeyframe(clip, comparisonPanDrag.video.currentTime - clip.trimStart, nx, ny);
   applyComparisonTransforms();
 });
 
@@ -3083,13 +3064,7 @@ function centerComparisonPane(event, side) {
   const nx = Math.min(1, Math.max(0, sourcePoint.x));
   const ny = Math.min(1, Math.max(0, sourcePoint.y));
   pushHistory();
-  if (clip.panAnimated) {
-    upsertKeyframeAt(clip, video.currentTime - clip.trimStart, nx, ny);
-    renderKeyframeMarkers();
-  } else {
-    clip.zoomX = nx;
-    clip.zoomY = ny;
-  }
+  recordPanMoveAsKeyframe(clip, video.currentTime - clip.trimStart, nx, ny);
   applyComparisonTransforms();
 }
 

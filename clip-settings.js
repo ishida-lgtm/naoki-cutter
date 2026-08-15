@@ -25,6 +25,26 @@
     return target;
   }
 
+  function upsertPanKeyframe(clip, localT, x, y) {
+    if (!Array.isArray(clip.panKeyframes)) clip.panKeyframes = [];
+    clip.panAnimated = true;
+    const duration = Math.max(0, Number(clip.trimEnd) - Number(clip.trimStart));
+    const t = Math.max(0, Math.min(duration, Number(localT) || 0));
+    const safeX = Math.max(0, Math.min(1, Number(x) || 0));
+    const safeY = Math.max(0, Math.min(1, Number(y) || 0));
+    const existing = clip.panKeyframes.find((keyframe) => Math.abs(keyframe.t - t) < 0.15);
+    if (existing) {
+      existing.t = t;
+      existing.x = safeX;
+      existing.y = safeY;
+      return { created: false, keyframe: existing };
+    }
+    const keyframe = { t, x: safeX, y: safeY };
+    clip.panKeyframes.push(keyframe);
+    clip.panKeyframes.sort((a, b) => a.t - b.t);
+    return { created: true, keyframe };
+  }
+
   function removeSelectedClipsFromTimeline(clips, transitions, selectedIds) {
     const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
     const remaining = clips
@@ -45,8 +65,9 @@
 
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
   root.cloneZoomForTarget = cloneZoomForTarget;
+  root.upsertPanKeyframe = upsertPanKeyframe;
   root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, removeSelectedClipsFromTimeline };
+    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, removeSelectedClipsFromTimeline };
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this));

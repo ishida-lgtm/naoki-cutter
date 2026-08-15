@@ -19,6 +19,12 @@ keyframe-add path as the toolbar `＋` button. Adding a keyframe automatically
 enables `panAnimated`, so the shortcut must not require a separate click on the
 `キー` checkbox.
 
+Manual pan is auto-keyframed. Dragging the preview or clicking a new center in
+ordinary or two-screen editing automatically sets `panAnimated`, checks the
+`キー` toggle, and inserts a keyframe at the current clip-local time. A second
+move within 0.15 seconds updates that point rather than adding a duplicate.
+The manual `＋` / `−` controls remain available.
+
 **Multi-clip export selection.** `exportSelectedClipIds` is distinct from the
 single active `selectedClipId`: clip-row `選択` checkboxes choose any number of
 clips for one export or batch-setting target, while ordinary selection still

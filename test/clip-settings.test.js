@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cloneClipSettingsForTarget, cloneZoomForTarget, removeSelectedClipsFromTimeline } = require('../clip-settings');
+const { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, removeSelectedClipsFromTimeline } = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
   const source = {
@@ -42,6 +42,24 @@ test('Zoomだけの一括反映では位置・キーフレーム・速度を変�
   cloneZoomForTarget(source, target);
   assert.equal(target.zoom, 3);
   assert.deepEqual({ ...target, zoom: before.zoom }, before);
+});
+
+test('画面位置を動かすとキーフレームを自動で有効化して追加する', () => {
+  const clip = { trimStart: 10, trimEnd: 20, panAnimated: false, panKeyframes: [] };
+  const result = upsertPanKeyframe(clip, 2.5, 0.25, 0.75);
+  assert.equal(result.created, true);
+  assert.equal(clip.panAnimated, true);
+  assert.deepEqual(clip.panKeyframes, [{ t: 2.5, x: 0.25, y: 0.75 }]);
+});
+
+test('同じ再生位置を動かし直すと既存キーフレームを更新する', () => {
+  const clip = {
+    trimStart: 0, trimEnd: 10, panAnimated: true,
+    panKeyframes: [{ t: 3, x: 0.2, y: 0.3 }],
+  };
+  const result = upsertPanKeyframe(clip, 3.08, 0.8, 0.7);
+  assert.equal(result.created, false);
+  assert.deepEqual(clip.panKeyframes, [{ t: 3.08, x: 0.8, y: 0.7 }]);
 });
 
 test('複数クリップ削除後の新しい隙間はカットで接続する', () => {
