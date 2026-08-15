@@ -433,6 +433,17 @@ for an export anomaly and found to already default to `false` (a no-op) —
 don't reintroduce it without a concrete reason, it doesn't do anything at
 its default.
 
+**Cuts must use concat, never a tiny xfade.** A cut was previously represented
+as a 0.04-second xfade/acrossfade. At 30fps that is 1.2 frames, so fractional-
+frame rounding accumulated across joins. On a real ten-clip export, the third
+join requested an xfade slightly beyond the quantized end of the preceding
+video; ffmpeg exited successfully but discarded the fourth and all later video
+while audio continued. True cuts now use video/audio `concat` with no overlap;
+only crossfade/dissolve use xfade/acrossfade. Video and audio are explicitly
+trimmed and timestamp-reset before joining. After a successful ffmpeg exit,
+`validateExportStreamDurations` must reject unexpectedly short video or a
+video/audio duration mismatch instead of reporting a broken file as success.
+
 ## Debugging methodology that actually worked
 
 This codebase has a long history of keyframe/crop drift bug reports that

@@ -1264,12 +1264,15 @@ function buildVideoFilter(clip, i, w, h, fps) {
     }
   }
 
+  const trimDur = clip.trimEnd - clip.trimStart;
+  const inputVideoOffset = Math.max(0, Number(clip._inputVideoOffset) || 0);
+  const inputTrim = `trim=start=${inputVideoOffset.toFixed(6)}:end=${(inputVideoOffset + trimDur).toFixed(6)},setpts=PTS-STARTPTS,`;
   const baseSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1;
   const tail = `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},format=yuv420p[v${i}]`;
 
   if (!clip.speedSegments || !clip.speedSegments.length) {
     const speedFilter = baseSpeed !== 1 ? `setpts=PTS/${baseSpeed},` : '';
-    return `[${i}:v]${pre}${speedFilter}${tail}`;
+    return `[${i}:v]${inputTrim}${pre}${speedFilter}${tail}`;
   }
 
   // Per-segment speed: crop once (a single continuous `t` timeline, so the
@@ -1278,10 +1281,9 @@ function buildVideoFilter(clip, i, w, h, fps) {
   // and concatenate — same idea as manually cutting the clip into pieces and
   // setting a different speed per piece, just without fragmenting the
   // clip list.
-  const trimDur = clip.trimEnd - clip.trimStart;
   const parts = partitionSpeedSegments(trimDur, clip.speedSegments, baseSpeed);
   const cropLabel = `vcrop${i}`;
-  let graph = `[${i}:v]${pre}format=yuv420p[${cropLabel}]`;
+  let graph = `[${i}:v]${inputTrim}${pre}format=yuv420p[${cropLabel}]`;
   const splitLabels = parts.map((_, idx) => `vseg${i}_${idx}`);
   graph += `;[${cropLabel}]split=${parts.length}${splitLabels.map((l) => `[${l}]`).join('')}`;
   const branchLabels = [];
@@ -1343,17 +1345,18 @@ function buildAudioFilter(clip, i, outputDur) {
     return `anullsrc=channel_layout=stereo:sample_rate=48000:duration=${outputDur.toFixed(3)}[a${i}]`;
   }
   const baseSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+  const trimDur = clip.trimEnd - clip.trimStart;
+  const inputTrim = `atrim=start=0:end=${trimDur.toFixed(6)},asetpts=PTS-STARTPTS,`;
   const tail = `aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS[a${i}]`;
 
   if (!clip.speedSegments || !clip.speedSegments.length) {
     const speedFilter = baseSpeed !== 1 ? `${buildAtempoChain(baseSpeed)},` : '';
-    return `[${i}:a]${speedFilter}${tail}`;
+    return `[${i}:a]${inputTrim}${speedFilter}${tail}`;
   }
 
-  const trimDur = clip.trimEnd - clip.trimStart;
   const parts = partitionSpeedSegments(trimDur, clip.speedSegments, baseSpeed);
   const splitLabels = parts.map((_, idx) => `aseg${i}_${idx}`);
-  let graph = `[${i}:a]asplit=${parts.length}${splitLabels.map((l) => `[${l}]`).join('')}`;
+  let graph = `[${i}:a]${inputTrim}asplit=${parts.length}${splitLabels.map((l) => `[${l}]`).join('')}`;
   const branchLabels = [];
   parts.forEach((p, idx) => {
     const outLabel = `asegout${i}_${idx}`;
@@ -1392,24 +1395,55 @@ function buildFilterGraph(clips, transitions, settings) {
   for (let i = 1; i < clips.length; i++) {
     const t = transitions[i - 1];
     const isCut = t.type === 'cut';
-    const dur = Math.max(isCut ? 0.04 : t.duration, 0.04);
-    const xfadeName = XFADE_NAMES[t.type] || 'fade';
-    const offset = Math.max(cumulative - dur, 0);
     const nextV = `vx${i}`;
     const nextA = `ax${i}`;
 
-    filters.push(
-      `[${currentVLabel}][v${i}]xfade=transition=${xfadeName}:duration=${dur}:offset=${offset}[${nextV}]`
-    );
-    filters.push(`[${currentALabel}][a${i}]acrossfade=d=${dur}[${nextA}]`);
+    if (isCut) {
+      // A cut is a true concatenation. The former 0.04-second xfade surrogate
+      // accumulated fractional-frame rounding at 30fps and could make xfade
+      // discard every video after a later join while audio kept concatenating.
+      filters.push(`[${currentVLabel}][v${i}]concat=n=2:v=1:a=0[${nextV}]`);
+      filters.push(`[${currentALabel}][a${i}]concat=n=2:v=0:a=1[${nextA}]`);
+      cumulative += durations[i];
+    } else {
+      const dur = Math.max(t.duration, 0.04);
+      const xfadeName = XFADE_NAMES[t.type] || 'fade';
+      const offset = Math.max(cumulative - dur, 0);
+      filters.push(
+        `[${currentVLabel}][v${i}]xfade=transition=${xfadeName}:duration=${dur}:offset=${offset}[${nextV}]`
+      );
+      filters.push(`[${currentALabel}][a${i}]acrossfade=d=${dur}[${nextA}]`);
+      cumulative = cumulative + durations[i] - dur;
+    }
 
     currentVLabel = nextV;
     currentALabel = nextA;
-    cumulative = cumulative + durations[i] - dur;
   }
 
   const filterComplex = filters.join(';');
   return { inputs, filterComplex, finalV: currentVLabel, finalA: currentALabel, totalDuration: cumulative };
+}
+
+function validateExportStreamDurations(outputPath, expectedDuration) {
+  const probe = spawnSync(FFPROBE, [
+    '-v', 'error', '-show_entries', 'stream=codec_type,duration', '-of', 'json', outputPath,
+  ], { encoding: 'utf8' });
+  if (probe.status !== 0) throw new Error('書き出した動画を検査できませんでした。');
+  let streams;
+  try {
+    streams = JSON.parse(probe.stdout).streams || [];
+  } catch {
+    throw new Error('書き出した動画の検査結果を読み取れませんでした。');
+  }
+  const videoDuration = Number(streams.find((stream) => stream.codec_type === 'video')?.duration);
+  const audioDuration = Number(streams.find((stream) => stream.codec_type === 'audio')?.duration);
+  const tolerance = Math.max(0.5, Number(expectedDuration) * 0.01);
+  if (!Number.isFinite(videoDuration) || videoDuration + tolerance < expectedDuration) {
+    throw new Error(`映像が途中で終了したため書き出しを失敗として停止しました（映像 ${Number.isFinite(videoDuration) ? videoDuration.toFixed(2) : '不明'}秒／予定 ${expectedDuration.toFixed(2)}秒）。`);
+  }
+  if (Number.isFinite(audioDuration) && Math.abs(audioDuration - videoDuration) > tolerance) {
+    throw new Error(`映像と音声の長さが一致しないため書き出しを失敗として停止しました（映像 ${videoDuration.toFixed(2)}秒／音声 ${audioDuration.toFixed(2)}秒）。`);
+  }
 }
 
 ipcMain.handle('export-video', async (event, { clips, transitions, settings }) => {
@@ -1472,7 +1506,12 @@ ipcMain.handle('export-video', async (event, { clips, transitions, settings }) =
         return;
       }
       if (code === 0) {
-        resolve({ success: true, outputPath: settings.outputPath });
+        try {
+          validateExportStreamDurations(settings.outputPath, totalDuration);
+          resolve({ success: true, outputPath: settings.outputPath });
+        } catch (error) {
+          reject(error);
+        }
       } else {
         reject(new Error(`ffmpeg failed (code ${code}):\n${stderr.slice(-2000)}`));
       }
