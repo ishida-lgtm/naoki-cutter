@@ -174,6 +174,10 @@ reveals clip selection, sync, audio, and export settings; `編集を開始` then
 enters the full-window comparison editor. Returning to one-screen editing
 collapses the configuration again. The existing `@` shortcut still opens the
 full comparison editor directly when two valid clips are available.
+Both `.comparison-box.hidden` and `.compare-panel-toggle.hidden` require an
+explicit `display: none` rule. The app does not have one global `.hidden`
+selector; without these component selectors the button toggles the class but
+the right-side comparison settings visibly remain open.
 The full-window comparison editor's close control is separately positioned at
 the top right so it remains visible on narrow windows. Do not put it back at
 the end of the crowded bottom control row: overflow there previously made the

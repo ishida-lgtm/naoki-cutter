@@ -1157,6 +1157,8 @@ body.timeline-trimming * {
   border-radius: 8px;
   background: #202023;
 }
+.comparison-box.hidden,
+.compare-panel-toggle.hidden { display: none; }
 .compare-panel-toggle {
   width: 100%;
   margin-bottom: 18px;
