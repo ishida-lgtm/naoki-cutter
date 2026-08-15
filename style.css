@@ -96,6 +96,7 @@ header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.2px
 
 main {
   flex: 1;
+  min-height: 0;
   display: flex;
   overflow: hidden;
 }
@@ -114,6 +115,9 @@ main {
   flex: 1;
   padding: 16px 24px;
   min-width: 280px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 body.preview-large .clip-panel {
   flex: 1 1 100%;

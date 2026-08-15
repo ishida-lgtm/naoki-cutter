@@ -445,6 +445,11 @@ sticky: the user must be able to scroll the left panel normally. Do not
 reintroduce selected-item `scrollIntoView()` in `render()` — it caused the
 panel to jump after cuts and keyframe edits. The timeline is 72px tall and the
 preview height cap is 38vh so both remain visible in an 800x600 window.
+The root `main` flex area must retain `min-height: 0`, and the right
+`.export-panel` must keep its own `overflow-y: auto`; otherwise additions to
+export settings are clipped below the window instead of remaining reachable
+by user scrolling. Programmatic edits must not change either panel's scroll
+position.
 
 **Timeline skimming.** The `skimmingToggle` setting preserves ordinary
 click-to-seek while optionally previewing the timeline position underneath the
