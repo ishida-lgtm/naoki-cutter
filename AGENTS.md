@@ -65,6 +65,14 @@ Selected export/batch targets show an orange check badge on the timeline, so
 the user does not need to scroll down to the clip-row checkboxes. Trim handles
 and transition markers must continue to stop propagation and never change this
 selection.
+When exactly two clips are checked and the right-side comparison settings are
+visible (or the full comparison editor is active), those clips are the source
+of truth for the comparison pair. `renderComparisonControls()` maps them in
+timeline order to left/top and right/bottom and resets the two start fields
+only when the pair actually changes. Opening `2画面で編集` must immediately run
+that synchronization; it must not keep stale dropdown values from an older
+pair. One, three, or more checked clips leave the existing comparison pair
+unchanged.
 
 **Editor training intervals and batch clip settings.** The slim action strip
 below the main toolbar supports both interval and point labels without leaving

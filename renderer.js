@@ -1245,6 +1245,21 @@ function clampComparisonStart(input, clip) {
   return clamped;
 }
 
+function applyCheckedClipsToComparison() {
+  const checked = comparisonPairFromSelection(clips, exportSelectedClipIds);
+  if (!checked) return false;
+  const nextA = String(checked[0].id);
+  const nextB = String(checked[1].id);
+  const changed = compareClipASelect.value !== nextA || compareClipBSelect.value !== nextB;
+  compareClipASelect.value = nextA;
+  compareClipBSelect.value = nextB;
+  if (changed) {
+    delete compareStartA.dataset.edited;
+    delete compareStartB.dataset.edited;
+  }
+  return true;
+}
+
 function renderComparisonControls() {
   const previousA = compareClipASelect.value;
   const previousB = compareClipBSelect.value;
@@ -1256,6 +1271,10 @@ function renderComparisonControls() {
   else if (clips[0]) compareClipASelect.value = String(clips[0].id);
   if (clips.some((clip) => String(clip.id) === previousB)) compareClipBSelect.value = previousB;
   else if (clips[1]) compareClipBSelect.value = String(clips[1].id);
+
+  if (!comparisonBox.classList.contains('hidden') || comparisonMode) {
+    applyCheckedClipsToComparison();
+  }
 
   const a = comparisonClip(compareClipASelect);
   const b = comparisonClip(compareClipBSelect);
@@ -1278,12 +1297,7 @@ function renderComparisonControls() {
 }
 
 function useCheckedClipsForComparison() {
-  const checked = comparisonPairFromSelection(clips, exportSelectedClipIds);
-  if (!checked) return false;
-  compareClipASelect.value = String(checked[0].id);
-  compareClipBSelect.value = String(checked[1].id);
-  delete compareStartA.dataset.edited;
-  delete compareStartB.dataset.edited;
+  if (!applyCheckedClipsToComparison()) return false;
   renderComparisonControls();
   statusText.textContent = `選択した2クリップを比較編集に設定しました`;
   return true;
@@ -1482,7 +1496,10 @@ async function autoSyncComparison() {
 
 compareAutoSyncBtn.addEventListener('click', autoSyncComparison);
 compareAutoSyncEditorBtn.addEventListener('click', autoSyncComparison);
-comparePanelToggleBtn.addEventListener('click', () => setComparisonPanelOpen(true));
+comparePanelToggleBtn.addEventListener('click', () => {
+  setComparisonPanelOpen(true);
+  renderComparisonControls();
+});
 comparePanelCloseBtn.addEventListener('click', () => setComparisonPanelOpen(false));
 comparePreviewBtn.addEventListener('click', openComparisonPreview);
 compareCloseBtn.addEventListener('click', closeComparisonPreview);
