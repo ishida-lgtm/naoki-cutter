@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, removeSelectedClipsFromTimeline } = require('../clip-settings');
+const { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, comparisonPairFromSelection, removeSelectedClipsFromTimeline } = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
   const source = {
@@ -60,6 +60,13 @@ test('同じ再生位置を動かし直すと既存キーフレームを更新�
   const result = upsertPanKeyframe(clip, 3.08, 0.8, 0.7);
   assert.equal(result.created, false);
   assert.deepEqual(clip.panKeyframes, [{ t: 3.08, x: 0.8, y: 0.7 }]);
+});
+
+test('タイムライン順で選択した2クリップを比較ペアにする', () => {
+  const clips = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  assert.deepEqual(comparisonPairFromSelection(clips, new Set([3, 1])), [clips[0], clips[2]]);
+  assert.equal(comparisonPairFromSelection(clips, new Set([1])), null);
+  assert.equal(comparisonPairFromSelection(clips, new Set([1, 2, 3])), null);
 });
 
 test('複数クリップ削除後の新しい隙間はカットで接続する', () => {

@@ -149,6 +149,10 @@ orientation, progress reporting, cancellation, and VideoToolbox encoding reuse
 the normal export settings. Comparison clip IDs, absolute source start times,
 and audio choice are included in lightweight project save/restore data.
 `@` toggles the full-window comparison editor from either direction.
+When exactly two clip-row `選択` checkboxes are checked, pressing `@` first
+assigns those two clips to left/top and right/bottom in timeline order, resets
+their comparison starts to their trim starts, and then opens comparison edit.
+One, three, or more checked clips never silently replace the current pair.
 
 The header `再生画面を大きく` button toggles a persistent large-preview
 layout for ordinary one-clip editing. Large mode hides only the right export
@@ -170,6 +174,33 @@ reveals clip selection, sync, audio, and export settings; `編集を開始` then
 enters the full-window comparison editor. Returning to one-screen editing
 collapses the configuration again. The existing `@` shortcut still opens the
 full comparison editor directly when two valid clips are available.
+
+**Automatic edit recovery.** Renderer changes are debounced for 1.5 seconds
+and saved as lightweight JSON through main-process IPC. `autosave-store.js`
+writes `userData/autosaves/latest.json` atomically and keeps a five-minute
+checkpoint history capped at five files. No media is copied. On launch the
+latest non-empty edit is restored automatically, including clip selection,
+comparison settings, and export settings; missing source paths are reported but
+not removed. Applying an in-app update flushes autosave before updater shutdown.
+The bulk `保存データとキャッシュを一括削除` action also clears autosaves,
+while per-save deletion does not. Derived `previewPath` values must never be
+serialized into project or autosave JSON.
+
+**4K preview proxies.** Sources whose long edge is at least 3000 pixels get a
+960px-long-edge editing proxy under `userData/preview-proxies`. The cache key
+uses source path, size, and mtime. Main process first tries H.264 VideoToolbox
+at about 1.8 Mbps and falls back to MPEG-4 at the same bitrate when macOS does
+not expose a compression session. Proxies retain the complete time axis and
+audio so trim, skim, J/K/L, 10x/16x playback, waveform alignment, and two-screen
+comparison still use source timestamps. Normal export, AI analysis, auto-track,
+and screen-recording mode always use the original source; recording switches
+back to the proxy afterward. `preview-proxy.js` prunes at app launch and after
+proxy access to at most 12 inactive files / about 4 GB, while active-session
+paths are protected. Cache cleanup deletes only derived proxies, never source
+or exported video.
+Proxy encodes are queued one at a time to avoid making the Mac fan spin up from
+several simultaneous 4K decodes. Cache cleanup advances a generation token so
+queued/finishing proxy jobs cannot recreate files immediately after deletion.
 
 `main.js` makes at most a 50-second, 640px/6fps/no-audio proxy for each side in
 the Electron temp directory. A clip of 60 seconds or less uses its complete
@@ -213,6 +244,8 @@ not require video frames to leave localhost.
   timeline with drag-reorder, export wiring.
 - `preload.js` — the only IPC surface (`contextBridge`). Keep it a thin
   pass-through; put logic in main.js or renderer.js, not here.
+- `autosave-store.js` — atomic latest edit plus rolling recovery checkpoints.
+- `preview-proxy.js` — deterministic proxy cache keys and bounded cleanup.
 - `index.html` / `style.css` — single-window UI, dark theme, no build step.
 - `bin/ffmpeg`, `bin/ffprobe`, `bin/libs/*.dylib` — bundled, portable
   binaries. See "Portability" before touching these.

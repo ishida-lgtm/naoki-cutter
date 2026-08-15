@@ -6,6 +6,8 @@ const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const { createUpdater } = require('./updater');
 const { deleteProjectFile } = require('./project-store');
+const { writeAutosave, loadLatestAutosave, clearAutosaves } = require('./autosave-store');
+const { proxyCacheKey, pruneProxyCache, clearProxyCache } = require('./preview-proxy');
 
 // Bundled in bin/ (with its dylib deps rewritten to @executable_path/libs via
 // dylibbundler) so the app runs on any Mac without needing Homebrew installed —
@@ -20,6 +22,10 @@ let currentExportProc = null;
 let exportCancelled = false;
 const waveformCache = new Map();
 const recordingSessions = new Map();
+const previewProxyJobs = new Map();
+const activePreviewProxyPaths = new Set();
+let previewProxyQueue = Promise.resolve();
+let previewProxyEpoch = 0;
 const SURF_ANALYZER_HOST = '127.0.0.1';
 const SURF_ANALYZER_PORT = 8000;
 const updater = createUpdater({ app, getMainWindow: () => mainWindow });
@@ -622,7 +628,10 @@ function createWindow() {
   mainWindow.loadFile('index.html');
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  pruneProxyCache(previewProxiesDir());
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -773,6 +782,14 @@ function projectsDir() {
   return path.join(app.getPath('userData'), 'projects');
 }
 
+function autosavesDir() {
+  return path.join(app.getPath('userData'), 'autosaves');
+}
+
+function previewProxiesDir() {
+  return path.join(app.getPath('userData'), 'preview-proxies');
+}
+
 function validProjectId(id) {
   return typeof id === 'string' && /^[a-zA-Z0-9-]+$/.test(id);
 }
@@ -846,6 +863,19 @@ ipcMain.handle('load-project', async (event, id) => {
   return { project: doc, missingPaths };
 });
 
+ipcMain.handle('save-autosave', async (event, payload) => {
+  return writeAutosave(autosavesDir(), payload);
+});
+
+ipcMain.handle('load-latest-autosave', async () => {
+  const doc = loadLatestAutosave(autosavesDir());
+  if (!doc) return null;
+  const missingPaths = [...new Set(
+    doc.data.clips.map((clip) => clip.path).filter((filePath) => !filePath || !fs.existsSync(filePath))
+  )];
+  return { autosave: doc, missingPaths };
+});
+
 ipcMain.handle('delete-project', async (event, id) => {
   const target = projectFilePath(id);
   // Delete only this app-owned project JSON. Never follow media paths stored
@@ -873,6 +903,10 @@ ipcMain.handle('delete-projects-and-cache', async () => {
   }
   const userDataPath = app.getPath('userData');
   const beforeCache = getDirSize(userDataPath);
+  clearAutosaves(autosavesDir());
+  clearProxyCache(previewProxiesDir());
+  activePreviewProxyPaths.clear();
+  previewProxyEpoch += 1;
   await session.defaultSession.clearCache();
   await session.defaultSession.clearStorageData();
   const afterCache = getDirSize(userDataPath);
@@ -929,6 +963,110 @@ function probeInfo(filePath) {
 
 ipcMain.handle('probe-info', async (event, filePath) => {
   return probeInfo(filePath);
+});
+
+function spawnPreviewProxyEncode(filePath, tempPath, scale, videoArgs) {
+  return new Promise((resolve, reject) => {
+    fs.rmSync(tempPath, { force: true });
+    const args = [
+      '-y', '-i', filePath,
+      '-map', '0:v:0', '-map', '0:a?',
+      '-vf', scale,
+      ...videoArgs,
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart',
+      '-f', 'mp4',
+      tempPath,
+    ];
+    const proc = spawn(FFMPEG, args);
+    let errorText = '';
+    proc.stderr.on('data', (chunk) => {
+      errorText = (errorText + chunk.toString()).slice(-12000);
+    });
+    proc.on('error', (error) => {
+      fs.rmSync(tempPath, { force: true });
+      reject(error);
+    });
+    proc.on('close', (code) => {
+      if (code !== 0 || !fs.existsSync(tempPath)) {
+        fs.rmSync(tempPath, { force: true });
+        reject(new Error(errorText || `ffmpeg exited ${code}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function runPreviewProxyEncode(filePath, outputPath, portrait) {
+  const tempPath = `${outputPath}.tmp`;
+  const scale = portrait ? 'scale=-2:960' : 'scale=960:-2';
+  try {
+    await spawnPreviewProxyEncode(filePath, tempPath, scale, [
+      '-c:v', 'h264_videotoolbox', '-allow_sw', '1',
+      '-b:v', '1800k', '-maxrate', '2400k', '-bufsize', '4800k',
+      '-pix_fmt', 'yuv420p',
+    ]);
+  } catch {
+    // Some macOS sessions do not expose VideoToolbox (for example a locked or
+    // remote session). A 960px MPEG-4 proxy is still far lighter to decode than
+    // the original 4K source, so editing remains usable instead of failing.
+    await spawnPreviewProxyEncode(filePath, tempPath, scale, [
+      '-c:v', 'mpeg4', '-b:v', '1800k', '-pix_fmt', 'yuv420p',
+    ]);
+  }
+  fs.renameSync(tempPath, outputPath);
+}
+
+async function ensurePreviewProxy(filePath) {
+  if (typeof filePath !== 'string' || !filePath || !fs.existsSync(filePath)) {
+    throw new Error('軽量プレビューを作る元動画が見つかりません');
+  }
+  const sourceInfo = await probeInfo(filePath);
+  if (Math.max(sourceInfo.width, sourceInfo.height) < 3000) {
+    return { path: filePath, proxy: false };
+  }
+  const key = proxyCacheKey(filePath);
+  const outputPath = path.join(previewProxiesDir(), `${key}.mp4`);
+  fs.mkdirSync(previewProxiesDir(), { recursive: true });
+  if (fs.existsSync(outputPath)) {
+    const now = new Date();
+    fs.utimesSync(outputPath, now, now);
+    activePreviewProxyPaths.add(outputPath);
+    pruneProxyCache(previewProxiesDir(), { keepPaths: activePreviewProxyPaths });
+    return { path: outputPath, proxy: true, cached: true };
+  }
+  if (!previewProxyJobs.has(key)) {
+    const jobEpoch = previewProxyEpoch;
+    const job = previewProxyQueue.then(async () => {
+      if (jobEpoch !== previewProxyEpoch) return { path: filePath, proxy: false, cancelled: true };
+      await runPreviewProxyEncode(filePath, outputPath, sourceInfo.height > sourceInfo.width);
+      if (jobEpoch !== previewProxyEpoch) {
+        fs.rmSync(outputPath, { force: true });
+        return { path: filePath, proxy: false, cancelled: true };
+      }
+      const proxyInfo = await probeInfo(outputPath);
+      const durationTolerance = Math.max(1, sourceInfo.duration * 0.01);
+      if (Math.abs(proxyInfo.duration - sourceInfo.duration) > durationTolerance) {
+        fs.rmSync(outputPath, { force: true });
+        throw new Error('軽量プレビューの長さを確認できませんでした');
+      }
+      activePreviewProxyPaths.add(outputPath);
+      pruneProxyCache(previewProxiesDir(), { keepPaths: activePreviewProxyPaths });
+      return { path: outputPath, proxy: true, cached: false };
+    }).finally(() => previewProxyJobs.delete(key));
+    previewProxyQueue = job.catch(() => {});
+    previewProxyJobs.set(key, job);
+  }
+  return previewProxyJobs.get(key);
+}
+
+ipcMain.handle('ensure-preview-proxy', async (event, filePath) => {
+  try {
+    return await ensurePreviewProxy(filePath);
+  } catch (error) {
+    throw new Error(`軽量プレビューを作成できませんでした: ${error.message}`);
+  }
 });
 
 // Automatic subject tracking: given one user-clicked seed position (a point on
@@ -1702,6 +1840,9 @@ function getDirSize(dirPath) {
 ipcMain.handle('clear-cache', async () => {
   const userDataPath = app.getPath('userData');
   const before = getDirSize(userDataPath);
+  clearProxyCache(previewProxiesDir());
+  activePreviewProxyPaths.clear();
+  previewProxyEpoch += 1;
   await session.defaultSession.clearCache();
   await session.defaultSession.clearStorageData();
   const after = getDirSize(userDataPath);

@@ -17,6 +17,10 @@ let lastTimelinePointer = null;
 let timelineScrollFrame = null;
 const waveformByPath = new Map();
 const waveformLoads = new Map();
+const previewProxyLoads = new Map();
+let autosaveTimer = null;
+let autosaveReady = false;
+let autosaveWriteChain = Promise.resolve();
 let recordingMode = false;
 let comparisonMode = false;
 let comparisonSyncing = false;
@@ -85,6 +89,7 @@ const cancelExportBtn = document.getElementById('cancelExportBtn');
 const clearCacheBtn = document.getElementById('clearCacheBtn');
 const projectNameInput = document.getElementById('projectNameInput');
 const saveProjectBtn = document.getElementById('saveProjectBtn');
+const autosaveStatus = document.getElementById('autosaveStatus');
 const savedProjectSelect = document.getElementById('savedProjectSelect');
 const loadProjectBtn = document.getElementById('loadProjectBtn');
 const deleteSelectedProjectBtn = document.getElementById('deleteSelectedProjectBtn');
@@ -656,6 +661,51 @@ async function ensureWaveform(filePath) {
   return load;
 }
 
+function previewMediaPath(clip) {
+  return clip?.previewPath || clip?.path || '';
+}
+
+function forgetPreviewProxies() {
+  const clip = selectedClip();
+  const currentTime = clip ? Number(previewVideo.currentTime) || clip.trimStart : 0;
+  clips.forEach((item) => { delete item.previewPath; });
+  previewProxyLoads.clear();
+  if (clip && loadedPath && loadedPath !== clip.path) {
+    loadPreviewMediaPath(clip.path, currentTime).catch(() => {});
+  }
+}
+
+async function ensurePreviewProxyForClip(clip) {
+  if (!clip?.path || Math.max(Number(clip.width) || 0, Number(clip.height) || 0) < 3000) return null;
+  if (clip.previewPath) return clip.previewPath;
+  if (selectedClip()?.path === clip.path) {
+    statusText.textContent = '4K用の軽量プレビューを準備しています。準備中も元動画で編集できます。';
+  }
+  if (previewProxyLoads.has(clip.path)) return previewProxyLoads.get(clip.path);
+  const load = window.api.ensurePreviewProxy(clip.path)
+    .then(async (result) => {
+      previewProxyLoads.delete(clip.path);
+      if (!result?.proxy || !result.path) return null;
+      clips.filter((item) => item.path === clip.path).forEach((item) => { item.previewPath = result.path; });
+      if (selectedClip()?.path === clip.path && loadedPath === clip.path && !recordingMode && !comparisonMode) {
+        const currentTime = previewVideo.currentTime;
+        const wasPlaying = !previewVideo.paused;
+        await loadPreviewMediaPath(result.path, currentTime, { autoplay: wasPlaying });
+        statusText.textContent = '4K用の軽量プレビューに切り替えました（書き出しは元動画を使います）';
+      }
+      return result.path;
+    })
+    .catch((error) => {
+      previewProxyLoads.delete(clip.path);
+      if (selectedClip()?.path === clip.path) {
+        statusText.textContent = `${error.message}。元動画のまま編集を続けます。`;
+      }
+      return null;
+    });
+  previewProxyLoads.set(clip.path, load);
+  return load;
+}
+
 function drawClipWaveform(canvas, clip) {
   const peaks = waveformByPath.get(clip.path);
   if (!peaks || !peaks.length || !clip.duration) return;
@@ -758,6 +808,7 @@ async function addFilePaths(paths) {
       };
       clips.push(clip);
       ensureWaveform(p);
+      ensurePreviewProxyForClip(clip);
       if (!firstAdded) firstAdded = clip;
       if (clips.length > 1) transitions.push({ type: 'cut', duration: 0.5 });
     } catch (e) {
@@ -1148,6 +1199,7 @@ function render() {
   recordModeBtn.disabled = !selectedClipId || exporting;
   renderComparisonControls();
   renderTimeline();
+  scheduleAutosave();
 }
 
 function comparisonClip(select) {
@@ -1217,6 +1269,18 @@ function renderComparisonControls() {
   comparePreviewBtn.textContent = comparisonMode ? '1画面編集へ戻る' : '編集を開始';
   if (a && !compareStartA.dataset.edited) compareStartA.value = a.trimStart.toFixed(3);
   if (b && !compareStartB.dataset.edited) compareStartB.value = b.trimStart.toFixed(3);
+}
+
+function useCheckedClipsForComparison() {
+  const checked = comparisonPairFromSelection(clips, exportSelectedClipIds);
+  if (!checked) return false;
+  compareClipASelect.value = String(checked[0].id);
+  compareClipBSelect.value = String(checked[1].id);
+  delete compareStartA.dataset.edited;
+  delete compareStartB.dataset.edited;
+  renderComparisonControls();
+  statusText.textContent = `選択した2クリップを比較編集に設定しました`;
+  return true;
 }
 
 function setComparisonPanelOpen(open) {
@@ -1313,8 +1377,10 @@ function openComparisonPreview() {
   previewVideoBox.classList.add('comparison-active');
   comparisonStage.classList.toggle('portrait', orientationSelect.value === 'portrait');
   comparisonStage.classList.toggle('landscape', orientationSelect.value !== 'portrait');
-  compareVideoA.src = 'file://' + encodeURI(a.path);
-  compareVideoB.src = 'file://' + encodeURI(b.path);
+  compareVideoA.src = 'file://' + encodeURI(previewMediaPath(a));
+  compareVideoB.src = 'file://' + encodeURI(previewMediaPath(b));
+  ensurePreviewProxyForClip(a);
+  ensurePreviewProxyForClip(b);
   compareSeekA.min = a.trimStart;
   compareSeekA.max = Math.max(a.trimStart, a.trimEnd - 0.001);
   compareSeekB.min = b.trimStart;
@@ -1828,10 +1894,52 @@ function updateTimelinePlayhead() {
 
 let loadedPath = null;
 
+function loadPreviewMediaPath(mediaPath, targetTime, { autoplay = false, playbackRate = 1 } = {}) {
+  const target = Math.max(0, Number(targetTime) || 0);
+  if (loadedPath === mediaPath && previewVideo.readyState >= 1) {
+    previewVideo.currentTime = target;
+    previewVideo.playbackRate = playbackRate;
+    if (autoplay) previewVideo.play().catch(() => {});
+    return Promise.resolve();
+  }
+  previewVideo.pause();
+  loadedPath = mediaPath;
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      cleanup();
+      previewVideo.playbackRate = playbackRate;
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        previewVideo.removeEventListener('seeked', settle);
+        if (autoplay) previewVideo.play().catch(() => {});
+        resolve();
+      };
+      previewVideo.addEventListener('seeked', settle, { once: true });
+      previewVideo.currentTime = target;
+      setTimeout(settle, 1500);
+    };
+    const fail = () => {
+      cleanup();
+      reject(new Error('プレビュー動画を読み込めませんでした'));
+    };
+    const cleanup = () => {
+      previewVideo.removeEventListener('loadedmetadata', finish);
+      previewVideo.removeEventListener('error', fail);
+    };
+    previewVideo.addEventListener('loadedmetadata', finish, { once: true });
+    previewVideo.addEventListener('error', fail, { once: true });
+    previewVideo.src = 'file://' + encodeURI(mediaPath);
+  });
+}
+
 function selectClip(id, { autoplay = false, keepPlayback = false, seekTo = null } = {}) {
   const clip = clips.find((c) => c.id === id);
   if (!clip) return;
-  const samePath = loadedPath === clip.path;
+  const mediaPath = previewMediaPath(clip);
+  ensurePreviewProxyForClip(clip);
+  const samePath = loadedPath === mediaPath;
   const target = seekTo != null ? Math.max(clip.trimStart, Math.min(clip.trimEnd, seekTo)) : clip.trimStart;
   selectedClipId = id;
   previewEmpty.style.display = 'none';
@@ -1873,8 +1981,17 @@ function selectClip(id, { autoplay = false, keepPlayback = false, seekTo = null 
 
   stopShuttleTimer();
   resetShuttle();
-  loadedPath = clip.path;
-  previewVideo.src = 'file://' + encodeURI(clip.path);
+  loadedPath = mediaPath;
+  previewVideo.onerror = () => {
+    previewVideo.onerror = null;
+    if (mediaPath !== clip.path) {
+      clips.filter((item) => item.path === clip.path).forEach((item) => { delete item.previewPath; });
+      loadedPath = null;
+      statusText.textContent = '軽量プレビューを読み直します。元動画で編集を続けます。';
+      selectClip(id, { autoplay, seekTo: target });
+    }
+  };
+  previewVideo.src = 'file://' + encodeURI(mediaPath);
   previewVideo.onloadedmetadata = () => {
     previewVideo.currentTime = target;
     updateScrubberUI();
@@ -2290,7 +2407,18 @@ async function ensureRecordingAudioGraph() {
 }
 
 async function enterRecordingMode() {
-  if (!selectedClip() || recordingMode) return;
+  const clip = selectedClip();
+  if (!clip || recordingMode) return;
+  const sourceTime = Number(previewVideo.currentTime) || clip.trimStart;
+  if (loadedPath !== clip.path) {
+    statusText.textContent = '画面収録用に元動画へ切り替えています…';
+    try {
+      await loadPreviewMediaPath(clip.path, sourceTime);
+    } catch (error) {
+      statusText.textContent = error.message;
+      return;
+    }
+  }
   recordingMode = true;
   drawingStrokes = [];
   activeDrawingStroke = null;
@@ -2304,11 +2432,16 @@ async function enterRecordingMode() {
 
 async function exitRecordingMode() {
   if (recordingActive) return;
+  const clip = selectedClip();
+  const sourceTime = clip ? Number(previewVideo.currentTime) || clip.trimStart : 0;
   recordingMode = false;
   if (recordingDrawFrame) cancelAnimationFrame(recordingDrawFrame);
   recordingDrawFrame = null;
   recordingOverlay.classList.add('hidden');
   await window.api.setFullScreen(false);
+  if (clip?.previewPath && loadedPath !== clip.previewPath) {
+    await loadPreviewMediaPath(clip.previewPath, sourceTime).catch(() => {});
+  }
 }
 
 function updateRecordingVolumeLabels() {
@@ -3562,8 +3695,13 @@ document.addEventListener('keydown', (e) => {
       setSkimmingEnabled(!skimmingToggle.checked, { announce: true });
       break;
     case '@':
-      if (e.repeat || comparePreviewBtn.disabled) break;
+      if (e.repeat) break;
       e.preventDefault();
+      useCheckedClipsForComparison();
+      if (comparePreviewBtn.disabled) {
+        statusText.textContent = '比較する2クリップを「選択」してから @ を押してください';
+        break;
+      }
       openComparisonPreview();
       break;
     case ';':
@@ -3755,7 +3893,10 @@ let savedProjectSummaries = [];
 
 function currentProjectData() {
   return {
-    clips: JSON.parse(JSON.stringify(clips)),
+    clips: clips.map((clip) => {
+      const { previewPath, ...editableClip } = clip;
+      return JSON.parse(JSON.stringify(editableClip));
+    }),
     transitions: JSON.parse(JSON.stringify(transitions)),
     selectedClipId,
     exportSelectedClipIds: [...exportSelectedClipIds],
@@ -3775,6 +3916,49 @@ function currentProjectData() {
     },
   };
 }
+
+function scheduleAutosave() {
+  if (!autosaveReady) return;
+  clearTimeout(autosaveTimer);
+  autosaveStatus.className = 'autosave-status';
+  autosaveStatus.textContent = '変更を自動保存します…';
+  autosaveTimer = setTimeout(() => {
+    const payload = {
+      projectId: currentProjectId,
+      name: projectNameInput.value,
+      data: currentProjectData(),
+    };
+    autosaveWriteChain = autosaveWriteChain
+      .then(() => window.api.saveAutosave(payload))
+      .then((result) => {
+        const time = new Date(result.updatedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        autosaveStatus.className = 'autosave-status saved';
+        autosaveStatus.textContent = `自動保存済み ${time}`;
+      })
+      .catch((error) => {
+        autosaveStatus.className = 'autosave-status error';
+        autosaveStatus.textContent = `自動保存できません: ${error.message}`;
+      });
+  }, 1500);
+}
+
+async function flushAutosave() {
+  if (!autosaveReady) return;
+  clearTimeout(autosaveTimer);
+  const payload = {
+    projectId: currentProjectId,
+    name: projectNameInput.value,
+    data: currentProjectData(),
+  };
+  autosaveWriteChain = autosaveWriteChain.then(() => window.api.saveAutosave(payload));
+  const result = await autosaveWriteChain;
+  const time = new Date(result.updatedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  autosaveStatus.className = 'autosave-status saved';
+  autosaveStatus.textContent = `自動保存済み ${time}`;
+}
+
+document.addEventListener('input', scheduleAutosave);
+document.addEventListener('change', scheduleAutosave);
 
 function formatProjectDate(iso) {
   const date = new Date(iso);
@@ -3813,6 +3997,95 @@ async function refreshSavedProjects(preferredId = currentProjectId) {
   }
 }
 
+async function applyEditingDocument(doc, missingPaths = [], { autosave = false } = {}) {
+  const data = doc.data;
+  previewVideo.pause();
+  stopShuttleTimer();
+  resetShuttle();
+  loadedPath = null;
+  previewVideo.removeAttribute('src');
+  previewVideo.load();
+  previewEmpty.style.display = 'flex';
+
+  clips = data.clips.map((clip) => ({
+    ...clip,
+    zoom: clip.zoom || 1,
+    zoomX: clip.zoomX != null ? clip.zoomX : 0.5,
+    zoomY: clip.zoomY != null ? clip.zoomY : 0.5,
+    panAnimated: !!clip.panAnimated,
+    panKeyframes: Array.isArray(clip.panKeyframes) ? clip.panKeyframes : [],
+    speed: clip.speed || 1,
+    speedSegments: Array.isArray(clip.speedSegments) ? clip.speedSegments : [],
+  }));
+  clips.forEach((clip) => {
+    ensureWaveform(clip.path);
+    ensurePreviewProxyForClip(clip);
+  });
+  exportSelectedClipIds = new Set(
+    (Array.isArray(data.exportSelectedClipIds) ? data.exportSelectedClipIds : [])
+      .filter((id) => clips.some((clip) => clip.id === id))
+  );
+  transitions = data.transitions.slice(0, Math.max(0, clips.length - 1));
+  while (transitions.length < clips.length - 1) transitions.push({ type: 'cut', duration: 0.5 });
+  nextId = clips.reduce((max, clip) => Math.max(max, Number(clip.id) || 0), 0) + 1;
+  selectedClipId = null;
+  historyStack = [];
+  redoStack = [];
+  currentProjectId = autosave ? (doc.projectId || null) : doc.id;
+  projectNameInput.value = doc.name || '';
+
+  const settings = data.settings || {};
+  if (['portrait', 'landscape'].includes(settings.orientation)) orientationSelect.value = settings.orientation;
+  if (['4k', 'fhd'].includes(settings.quality)) qualitySelect.value = settings.quality;
+  if (['h264', 'h265'].includes(settings.codec)) codecSelect.value = settings.codec;
+  if (['30', '60'].includes(String(settings.fps))) fpsSelect.value = String(settings.fps);
+  if (typeof settings.skimming === 'boolean') {
+    skimmingToggle.checked = settings.skimming;
+    localStorage.setItem('skimmingEnabled', String(settings.skimming));
+  }
+  const comparison = settings.comparison || {};
+  delete compareStartA.dataset.edited;
+  delete compareStartB.dataset.edited;
+  renderComparisonControls();
+  if (clips.some((clip) => clip.id === comparison.clipAId)) compareClipASelect.value = String(comparison.clipAId);
+  if (clips.some((clip) => clip.id === comparison.clipBId)) compareClipBSelect.value = String(comparison.clipBId);
+  if (Number.isFinite(Number(comparison.startA))) {
+    compareStartA.value = Number(comparison.startA).toFixed(3);
+    compareStartA.dataset.edited = 'true';
+  }
+  if (Number.isFinite(Number(comparison.startB))) {
+    compareStartB.value = Number(comparison.startB).toFixed(3);
+    compareStartB.dataset.edited = 'true';
+  }
+  if (['left', 'right', 'both', 'none'].includes(comparison.audio)) compareAudioSelect.value = comparison.audio;
+  updateExportLabel();
+  updatePreviewBoxAspect();
+  render();
+
+  const missing = new Set(missingPaths || []);
+  const firstAvailable = clips.find((clip) => !missing.has(clip.path));
+  const requested = clips.find((clip) => clip.id === data.selectedClipId && !missing.has(clip.path)) || firstAvailable;
+  if (requested) selectClip(requested.id);
+  if (missing.size) {
+    statusText.textContent = `${autosave ? '前回の編集を復元しました' : `「${doc.name}」を開きました`}。元動画が${missing.size}個見つかりません。元の場所へ戻すと再び使えます。`;
+  } else {
+    statusText.textContent = autosave ? '前回の編集内容を自動復元しました' : `「${doc.name}」を開きました`;
+  }
+}
+
+async function restoreLatestAutosave() {
+  try {
+    const result = await window.api.loadLatestAutosave();
+    if (!result?.autosave || !result.autosave.data.clips.length) return false;
+    await applyEditingDocument(result.autosave, result.missingPaths, { autosave: true });
+    return true;
+  } catch (error) {
+    autosaveStatus.className = 'autosave-status error';
+    autosaveStatus.textContent = `自動復元できません: ${error.message}`;
+    return false;
+  }
+}
+
 saveProjectBtn.addEventListener('click', async () => {
   if (!clips.length) return;
   saveProjectBtn.disabled = true;
@@ -3826,6 +4099,7 @@ saveProjectBtn.addEventListener('click', async () => {
     currentProjectId = saved.id;
     projectNameInput.value = saved.name;
     await refreshSavedProjects(saved.id);
+    scheduleAutosave();
     statusText.textContent = `「${saved.name}」を保存しました（動画本体はコピーしていません）`;
   } catch (e) {
     statusText.textContent = `保存に失敗しました: ${e.message}`;
@@ -3867,7 +4141,10 @@ loadProjectBtn.addEventListener('click', async () => {
       speed: clip.speed || 1,
       speedSegments: Array.isArray(clip.speedSegments) ? clip.speedSegments : [],
     }));
-    clips.forEach((clip) => ensureWaveform(clip.path));
+    clips.forEach((clip) => {
+      ensureWaveform(clip.path);
+      ensurePreviewProxyForClip(clip);
+    });
     exportSelectedClipIds = new Set(
       (Array.isArray(data.exportSelectedClipIds) ? data.exportSelectedClipIds : [])
         .filter((id) => clips.some((clip) => clip.id === id))
@@ -3938,6 +4215,7 @@ deleteSelectedProjectBtn.addEventListener('click', async () => {
     await window.api.deleteProject(id);
     if (currentProjectId === id) currentProjectId = null;
     await refreshSavedProjects(null);
+    scheduleAutosave();
     statusText.textContent = `保存データ「${selected.name}」だけを削除しました。現在の編集内容と元動画は残っています。`;
   } catch (e) {
     statusText.textContent = `選択した保存データを削除できませんでした: ${e.message}`;
@@ -3952,10 +4230,14 @@ deleteProjectsBtn.addEventListener('click', async () => {
     '保存した編集データとアプリの一時キャッシュをすべて削除しますか？\n\n元動画と書き出し済み動画は削除されません。'
   );
   if (!ok) return;
+  autosaveReady = false;
+  clearTimeout(autosaveTimer);
+  await autosaveWriteChain.catch(() => {});
   deleteProjectsBtn.disabled = true;
   deleteProjectsBtn.textContent = '削除中…';
   try {
     const result = await window.api.deleteProjectsAndCache();
+    forgetPreviewProxies();
     currentProjectId = null;
     const freedMB = (result.freedBytes / 1024 / 1024).toFixed(1);
     await refreshSavedProjects(null);
@@ -3963,6 +4245,7 @@ deleteProjectsBtn.addEventListener('click', async () => {
   } catch (e) {
     statusText.textContent = `一括削除に失敗しました: ${e.message}`;
   } finally {
+    autosaveReady = true;
     deleteProjectsBtn.textContent = '保存データとキャッシュを一括削除';
     deleteProjectsBtn.disabled = false;
   }
@@ -4196,6 +4479,7 @@ clearCacheBtn.addEventListener('click', async () => {
   clearCacheBtn.textContent = '削除中...';
   try {
     const result = await window.api.clearCache();
+    forgetPreviewProxies();
     const freedMB = (result.freedBytes / 1024 / 1024).toFixed(1);
     statusText.textContent = `キャッシュを削除しました（約${freedMB}MB解放）`;
   } catch (e) {
@@ -4344,6 +4628,7 @@ updateInstallBtn.addEventListener('click', async () => {
   if (!latestUpdateInfo) return;
   showUpdateBanner({ title: 'アップデートを準備しています', message: 'しばらくお待ちください…', kind: 'working' });
   try {
+    await flushAutosave();
     await window.api.installUpdate();
   } catch (error) {
     showUpdateBanner({ title: 'アップデートに失敗しました', message: error.message, kind: 'error' });
@@ -4356,8 +4641,15 @@ window.api.onUpdateProgress(({ message }) => {
 });
 
 if (lastExportedPath) rememberExportedVideo(lastExportedPath);
-render();
-refreshSavedProjects();
+async function initializeEditor() {
+  render();
+  await refreshSavedProjects();
+  await restoreLatestAutosave();
+  autosaveReady = true;
+  scheduleAutosave();
+}
+
+initializeEditor();
 setTimeout(() => checkForAppUpdate().catch((error) => {
   showUpdateBanner({ title: 'アップデートを確認できませんでした', message: error.message, kind: 'error' });
 }), 1500);

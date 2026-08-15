@@ -203,6 +203,9 @@ body.preview-large .preview-wrap { padding-left: 20px; padding-right: 20px; }
   border-color: #2784cc;
 }
 .project-save-btn:hover { background: #1d7bc4; }
+.autosave-status { margin: 5px 0 0; color: #77777d; font-size: 10px; }
+.autosave-status.saved { color: #77b98a; }
+.autosave-status.error { color: #ffaaa4; }
 .project-load-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;

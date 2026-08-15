@@ -45,6 +45,12 @@
     return { created: true, keyframe };
   }
 
+  function comparisonPairFromSelection(clips, selectedIds) {
+    const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
+    const pair = clips.filter((clip) => selected.has(clip.id));
+    return pair.length === 2 ? pair : null;
+  }
+
   function removeSelectedClipsFromTimeline(clips, transitions, selectedIds) {
     const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
     const remaining = clips
@@ -66,8 +72,9 @@
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
   root.cloneZoomForTarget = cloneZoomForTarget;
   root.upsertPanKeyframe = upsertPanKeyframe;
+  root.comparisonPairFromSelection = comparisonPairFromSelection;
   root.removeSelectedClipsFromTimeline = removeSelectedClipsFromTimeline;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, removeSelectedClipsFromTimeline };
+    module.exports = { cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe, comparisonPairFromSelection, removeSelectedClipsFromTimeline };
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this));
