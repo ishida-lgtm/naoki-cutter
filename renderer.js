@@ -24,10 +24,16 @@ let autosaveWriteChain = Promise.resolve();
 let recordingMode = false;
 let comparisonMode = false;
 let comparisonSyncing = false;
+let autoCutInProgress = false;
+let aiQueueRunning = false;
+let aiQueuePaused = false;
+let aiQueueCancelled = false;
 let largePreview = localStorage.getItem('largePreview') === 'true';
 let activeWorkspace = 'edit';
 let trainingData = null;
 let formAnalysisInProgress = false;
+let lastFormAnalysis = null;
+let referenceVideos = [];
 let currentTrainingExampleId = null;
 let pendingEditTrainingStart = null;
 let pendingEditTrainingEnd = null;
@@ -145,6 +151,14 @@ const analysisFileName = document.getElementById('analysisFileName');
 const analysisLoading = document.getElementById('analysisLoading');
 const analysisError = document.getElementById('analysisError');
 const analysisResult = document.getElementById('analysisResult');
+const aiCandidateReviewOverlay = document.getElementById('aiCandidateReviewOverlay');
+const candidateReviewCloseBtn = document.getElementById('candidateReviewCloseBtn');
+const candidateLearningTitle = document.getElementById('candidateLearningTitle');
+const candidateReviewVideo = document.getElementById('candidateReviewVideo');
+const candidateReviewList = document.getElementById('candidateReviewList');
+const candidateReviewStatus = document.getElementById('candidateReviewStatus');
+const candidateReviewCancelBtn = document.getElementById('candidateReviewCancelBtn');
+const candidateReviewApplyBtn = document.getElementById('candidateReviewApplyBtn');
 const referenceSaveForm = document.getElementById('referenceSaveForm');
 const referenceNameInput = document.getElementById('referenceNameInput');
 const referenceDescriptionInput = document.getElementById('referenceDescriptionInput');
@@ -157,10 +171,12 @@ const editWorkspace = document.getElementById('editWorkspace');
 const formWorkspace = document.getElementById('formWorkspace');
 const trainingWorkspace = document.getElementById('trainingWorkspace');
 const formSourceSelect = document.getElementById('formSourceSelect');
+const formStudentName = document.getElementById('formStudentName');
 const formVideo = document.getElementById('formVideo');
 const formVideoEmpty = document.getElementById('formVideoEmpty');
 const formLocalAnalyzeBtn = document.getElementById('formLocalAnalyzeBtn');
 const formCloudAnalyzeBtn = document.getElementById('formCloudAnalyzeBtn');
+const formLessonVideoBtn = document.getElementById('formLessonVideoBtn');
 const formAnalysisStatus = document.getElementById('formAnalysisStatus');
 const formAnalysisResult = document.getElementById('formAnalysisResult');
 const formCatchStart = document.getElementById('formCatchStart');
@@ -168,15 +184,59 @@ const formTakeoffStart = document.getElementById('formTakeoffStart');
 const formTakeoffEnd = document.getElementById('formTakeoffEnd');
 const formEventBar = document.getElementById('formEventBar');
 const formSaveTrainingBtn = document.getElementById('formSaveTrainingBtn');
+const formLearningTitle = document.getElementById('formLearningTitle');
 const formSaveStatus = document.getElementById('formSaveStatus');
 const trainingExampleList = document.getElementById('trainingExampleList');
 const trainingEmpty = document.getElementById('trainingEmpty');
 const refreshTrainingBtn = document.getElementById('refreshTrainingBtn');
+const refreshAnalysisHistoryBtn = document.getElementById('refreshAnalysisHistoryBtn');
+const analysisHistoryList = document.getElementById('analysisHistoryList');
+const analysisHistoryEmpty = document.getElementById('analysisHistoryEmpty');
+const exportAiBackupBtn = document.getElementById('exportAiBackupBtn');
+const importAiBackupBtn = document.getElementById('importAiBackupBtn');
+const aiBackupStatus = document.getElementById('aiBackupStatus');
+const refreshReferencesBtn = document.getElementById('refreshReferencesBtn');
+const referenceSearchInput = document.getElementById('referenceSearchInput');
+const referenceQuickName = document.getElementById('referenceQuickName');
+const referenceQuickDescription = document.getElementById('referenceQuickDescription');
+const saveLatestAsReferenceBtn = document.getElementById('saveLatestAsReferenceBtn');
+const referenceLatestHint = document.getElementById('referenceLatestHint');
+const referenceQuickStatus = document.getElementById('referenceQuickStatus');
+const referenceVideoList = document.getElementById('referenceVideoList');
+const referenceVideoEmpty = document.getElementById('referenceVideoEmpty');
 const updateBanner = document.getElementById('updateBanner');
 const updateTitle = document.getElementById('updateTitle');
 const updateMessage = document.getElementById('updateMessage');
 const updateInstallBtn = document.getElementById('updateInstallBtn');
 const updateDismissBtn = document.getElementById('updateDismissBtn');
+const surfAnalyzerStatusBtn = document.getElementById('surfAnalyzerStatusBtn');
+
+function renderSurfAnalyzerStatus(status = {}) {
+  const state = status.state || 'stopped';
+  surfAnalyzerStatusBtn.className = `analyzer-status ${state}`;
+  const labels = {
+    ready: '● AI準備完了',
+    starting: '● AI準備中',
+    stopped: '● AI停止中',
+    missing: '● AI未設定',
+    error: '● AI起動失敗',
+  };
+  surfAnalyzerStatusBtn.textContent = labels[state] || labels.stopped;
+  surfAnalyzerStatusBtn.title = status.message || (state === 'ready'
+    ? 'フォーム解析AIは利用できます'
+    : 'クリックしてフォーム解析AIを再起動');
+  surfAnalyzerStatusBtn.disabled = state === 'starting';
+}
+
+window.api.onSurfAnalyzerStatus(renderSurfAnalyzerStatus);
+window.api.surfAnalyzerStatus().then(renderSurfAnalyzerStatus).catch(() => {
+  renderSurfAnalyzerStatus({ state: 'stopped' });
+});
+surfAnalyzerStatusBtn.addEventListener('click', async () => {
+  renderSurfAnalyzerStatus({ state: 'starting' });
+  try { renderSurfAnalyzerStatus(await window.api.restartSurfAnalyzer()); }
+  catch (error) { renderSurfAnalyzerStatus({ state: 'error', message: error.message }); }
+});
 
 const previewVideo = document.getElementById('previewVideo');
 const previewEmpty = document.getElementById('previewEmpty');
@@ -200,6 +260,7 @@ const zoomResetBtn = document.getElementById('zoomResetBtn');
 const zoom2xBtn = document.getElementById('zoom2xBtn');
 const zoom3xBtn = document.getElementById('zoom3xBtn');
 const editTrainingEvent = document.getElementById('editTrainingEvent');
+const editTrainingTitle = document.getElementById('editTrainingTitle');
 const editTrainingStartBtn = document.getElementById('editTrainingStartBtn');
 const editTrainingEndBtn = document.getElementById('editTrainingEndBtn');
 const editTrainingRange = document.getElementById('editTrainingRange');
@@ -208,9 +269,21 @@ const editPaddleForm = document.getElementById('editPaddleForm');
 const editTakeoffShape = document.getElementById('editTakeoffShape');
 const editTakeoffFootwork = document.getElementById('editTakeoffFootwork');
 const editTakeoffType = document.getElementById('editTakeoffType');
+const editMovementName = document.getElementById('editMovementName');
 const settingScope = document.getElementById('settingScope');
 const applyZoomToSelectedBtn = document.getElementById('applyZoomToSelectedBtn');
 const applyClipSettingsBtn = document.getElementById('applyClipSettingsBtn');
+const autoCutTakeoffBtn = document.getElementById('autoCutTakeoffBtn');
+const autoCutRidingBtn = document.getElementById('autoCutRidingBtn');
+const autoCutStatus = document.getElementById('autoCutStatus');
+const batchAiMode = document.getElementById('batchAiMode');
+const batchAiRole = document.getElementById('batchAiRole');
+const batchAiStartBtn = document.getElementById('batchAiStartBtn');
+const batchAiPauseBtn = document.getElementById('batchAiPauseBtn');
+const batchAiCancelBtn = document.getElementById('batchAiCancelBtn');
+const aiQueuePanel = document.getElementById('aiQueuePanel');
+const aiQueueStatus = document.getElementById('aiQueueStatus');
+const aiQueueList = document.getElementById('aiQueueList');
 const speedSelect = document.getElementById('speedSelect');
 const speedSegStartBtn = document.getElementById('speedSegStartBtn');
 const speedSegEndBtn = document.getElementById('speedSegEndBtn');
@@ -373,6 +446,8 @@ function loadTrainingValues(example) {
   const takeoffSegment = exampleSegment(example, 'takeoff');
   const takeoffStartLabel = exampleLabel(example, 'takeoff_start_hands_down');
   const takeoffEndLabel = exampleLabel(example, 'takeoff_end_hands_release');
+  const takeoffInstance = (example?.event_instances || []).find((instance) => instance.event === 'takeoff');
+  formLearningTitle.value = takeoffSegment?.learning_title || takeoffInstance?.learning_title || '';
   formCatchStart.value = catchSegment ? Number(catchSegment.start_seconds).toFixed(2) : '';
   formTakeoffStart.value = takeoffSegment
     ? Number(takeoffSegment.start_seconds).toFixed(2)
@@ -390,6 +465,7 @@ function updateFormSource() {
   formLocalAnalyzeBtn.disabled = !enabled;
   formCloudAnalyzeBtn.disabled = !enabled;
   formSaveTrainingBtn.disabled = !enabled;
+  formLessonVideoBtn.disabled = !enabled || !lastFormAnalysis?.analysis_markers?.length;
   if (!clip) {
     formVideo.pause();
     formVideo.removeAttribute('src');
@@ -417,7 +493,12 @@ function switchWorkspace(name) {
     refreshFormSources(selectedClip()?.path || formSourceSelect.value);
     refreshTrainingData();
   }
-  if (name === 'training') refreshTrainingData();
+  if (name === 'training') {
+    refreshTrainingData();
+    refreshAnalysisHistory();
+    refreshReferenceVideos();
+    updateReferenceLatestUI();
+  }
 }
 
 editWorkspaceBtn.addEventListener('click', () => switchWorkspace('edit'));
@@ -439,8 +520,8 @@ function formSourcePayload() {
   const pan = getEffectivePan(clip, Math.max(0, currentTime - (clip.trimStart || 0)));
   return {
     path: clip.path,
-    trimStart: 0,
-    trimEnd: clip.duration,
+    trimStart: Math.max(0, Number(clip.trimStart) || 0),
+    trimEnd: Math.min(Number(clip.duration) || 0, Number(clip.trimEnd) || Number(clip.duration) || 0),
     start: currentTime,
     zoom: clip.zoom,
     syncPanX: pan.x,
@@ -454,6 +535,7 @@ function setFormAnalysisBusy(busy) {
   formLocalAnalyzeBtn.disabled = !enabled;
   formCloudAnalyzeBtn.disabled = !enabled;
   formSaveTrainingBtn.disabled = !enabled;
+  formLessonVideoBtn.disabled = !enabled || !lastFormAnalysis?.analysis_markers?.length;
   formLocalAnalyzeBtn.textContent = busy ? '解析中…' : 'Mac内AIで動作を検出';
 }
 
@@ -496,6 +578,175 @@ async function refreshTrainingData() {
   }
 }
 
+async function refreshAnalysisHistory() {
+  try {
+    const result = await window.api.listAnalysisHistory();
+    const records = Array.isArray(result.records) ? [...result.records].reverse() : [];
+    analysisHistoryList.innerHTML = '';
+    analysisHistoryEmpty.classList.toggle('hidden', records.length > 0);
+    records.forEach((record) => {
+      const card = document.createElement('article');
+      card.className = 'training-example analysis-history-card';
+      const body = document.createElement('div');
+      const title = document.createElement('strong');
+      const date = new Date(record.analyzed_at);
+      title.textContent = `${record.student_name}　${Number(record.total_score) || 0}点`;
+      const meta = document.createElement('p');
+      meta.textContent = [
+        Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('ja-JP'),
+        record.source_name || '', record.level || '',
+        record.takeoff_duration_seconds != null ? `テイクオフ ${Number(record.takeoff_duration_seconds).toFixed(2)}秒` : '',
+        record.comparison_reference ? `比較: ${record.comparison_reference}` : '',
+      ].filter(Boolean).join('　');
+      const points = document.createElement('p');
+      points.textContent = (record.improvement_points || []).join(' ／ ') || record.overall_comment || '改善点なし';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '削除';
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`${record.student_name}のこの解析履歴を削除しますか？\n元動画は削除されません。`)) return;
+        await window.api.deleteAnalysisHistory(record.id);
+        refreshAnalysisHistory();
+      });
+      body.append(title, meta, points);
+      card.append(body, remove);
+      analysisHistoryList.appendChild(card);
+    });
+  } catch (error) {
+    analysisHistoryEmpty.textContent = `履歴を読み込めません: ${error.message}`;
+    analysisHistoryEmpty.classList.remove('hidden');
+  }
+}
+
+function updateReferenceLatestUI() {
+  const filename = lastExportedPath?.split('/').pop() || '';
+  saveLatestAsReferenceBtn.disabled = !lastExportedPath;
+  referenceLatestHint.textContent = filename
+    ? `登録する書き出し済み動画：${filename}`
+    : '先に参考にしたいクリップを書き出してください。';
+  if (filename && !referenceQuickName.value.trim()) {
+    referenceQuickName.value = filename.replace(/\.[^.]+$/, '');
+  }
+}
+
+function renderReferenceVideos(references) {
+  const query = referenceSearchInput.value.trim().toLowerCase();
+  const visible = references.filter((reference) => !query || [
+    reference.name, reference.description, ...Object.values(reference.tags || {}),
+  ].join(' ').toLowerCase().includes(query));
+  referenceVideoList.innerHTML = '';
+  referenceVideoEmpty.textContent = references.length && !visible.length ? '検索に一致する参考動画がありません。' : '参考動画はまだありません。';
+  referenceVideoEmpty.classList.toggle('hidden', visible.length > 0);
+  visible.forEach((reference) => {
+    const card = document.createElement('article');
+    card.className = 'training-example reference-video-card';
+    const header = document.createElement('div');
+    header.className = 'training-example-header';
+    const title = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = reference.name || '名称なし';
+    const kind = document.createElement('span');
+    kind.className = 'reference-kind-badge';
+    kind.textContent = '生徒比較用';
+    title.append(name, kind);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '削除';
+    remove.addEventListener('click', async () => {
+      if (!window.confirm(`${reference.name || 'この参考動画'}を比較用データから削除しますか？\n元動画は削除されません。`)) return;
+      remove.disabled = true;
+      try {
+        await window.api.deleteReferenceVideo(reference.id);
+        referenceQuickStatus.textContent = '参考動画を削除しました。元動画は残っています。';
+        await refreshReferenceVideos();
+      } catch (error) {
+        referenceQuickStatus.textContent = `参考動画を削除できません: ${error.message}`;
+        remove.disabled = false;
+      }
+    });
+    header.append(title, remove);
+    const description = document.createElement('p');
+    description.textContent = reference.description || '説明なし';
+    const meta = document.createElement('p');
+    meta.textContent = `${reference.source_type === 'image' ? '画像' : '動画'}・比較用${Number(reference.frame_count) || 0}フレーム`;
+    const tagEditor = document.createElement('div');
+    tagEditor.className = 'reference-tag-editor';
+    const fields = [
+      ['movement', '動作', 'テイクオフ／パドル／ボトムターン'],
+      ['board', 'ボード', 'ショート／ミッドレングス／ロング'],
+      ['angle', '方向', '正面／横／後方'],
+      ['level', 'レベル', '初級／中級／上級'],
+      ['wave', '波', 'サイズ・コンディション'],
+    ];
+    const inputs = {};
+    fields.forEach(([key, label, placeholder]) => {
+      const input = document.createElement('input');
+      input.type = 'text'; input.maxLength = key === 'wave' ? 120 : 80;
+      input.placeholder = `${label}: ${placeholder}`;
+      input.value = reference.tags?.[key] || '';
+      inputs[key] = input;
+      tagEditor.appendChild(input);
+    });
+    const saveTags = document.createElement('button');
+    saveTags.type = 'button'; saveTags.textContent = 'タグ保存';
+    saveTags.addEventListener('click', async () => {
+      saveTags.disabled = true;
+      try {
+        reference.tags = await window.api.saveReferenceTags({
+          id: reference.id,
+          tags: Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value])),
+        });
+        referenceQuickStatus.textContent = `「${reference.name}」のタグを保存しました。`;
+      } catch (error) {
+        referenceQuickStatus.textContent = `タグを保存できません: ${error.message}`;
+      } finally { saveTags.disabled = false; }
+    });
+    tagEditor.appendChild(saveTags);
+    card.append(header, description, meta, tagEditor);
+    referenceVideoList.appendChild(card);
+  });
+}
+
+async function refreshReferenceVideos() {
+  try {
+    const result = await window.api.listReferenceVideos();
+    referenceVideos = Array.isArray(result.references) ? result.references : [];
+    renderReferenceVideos(referenceVideos);
+  } catch (error) {
+    referenceVideoList.innerHTML = '';
+    referenceVideoEmpty.textContent = `参考動画を読み込めません: ${error.message}`;
+    referenceVideoEmpty.classList.remove('hidden');
+  }
+}
+
+refreshReferencesBtn.addEventListener('click', refreshReferenceVideos);
+referenceSearchInput.addEventListener('input', () => renderReferenceVideos(referenceVideos));
+saveLatestAsReferenceBtn.addEventListener('click', async () => {
+  if (!lastExportedPath) return;
+  const name = referenceQuickName.value.trim();
+  if (!name) {
+    referenceQuickStatus.textContent = '参考動画名を入力してください。';
+    return;
+  }
+  saveLatestAsReferenceBtn.disabled = true;
+  referenceQuickStatus.textContent = '生徒比較用の参考動画として登録中…';
+  try {
+    const result = await window.api.saveExportedAsReference({
+      filePath: lastExportedPath,
+      name,
+      description: referenceQuickDescription.value.trim(),
+    });
+    referenceQuickStatus.textContent = `参考動画「${result.name || name}」を登録しました。学習データとは別に保存されています。`;
+    referenceQuickName.value = '';
+    referenceQuickDescription.value = '';
+    await refreshReferenceVideos();
+  } catch (error) {
+    referenceQuickStatus.textContent = `参考動画を登録できません: ${error.message}`;
+  } finally {
+    updateReferenceLatestUI();
+  }
+});
+
 function renderTrainingExamples() {
   trainingExampleList.innerHTML = '';
   const examples = Array.isArray(trainingData?.examples) ? trainingData.examples : [];
@@ -507,6 +758,14 @@ function renderTrainingExamples() {
     const paddleFormSegment = exampleSegment(example, 'paddle_form');
     const takeoffSegment = exampleSegment(example, 'takeoff');
     const takeoffPostureSegment = exampleSegment(example, 'takeoff_posture');
+    const eventInstances = Array.isArray(example.event_instances) ? example.event_instances : [];
+    const learningTitles = [...new Set([
+      ...eventInstances.map((instance) => instance.learning_title),
+      ...Object.keys(example.learning_sets || {}),
+    ].filter(Boolean))];
+    const takeoffInstances = eventInstances.filter((instance) => instance.event === 'takeoff');
+    const ridingInstances = eventInstances.filter((instance) => instance.event === 'riding');
+    const turnInstances = eventInstances.filter((instance) => instance.event === 'turn');
     const card = document.createElement('article');
     card.className = 'training-example';
     const body = document.createElement('div');
@@ -533,12 +792,16 @@ function renderTrainingExamples() {
       || (takeoffSegment ? Number(takeoffSegment.end_seconds) - Number(takeoffSegment.start_seconds) : 0);
     const pointText = (label) => label ? `${Number(label.time_seconds).toFixed(2)}秒` : '未登録';
     times.textContent = [
+      learningTitles.length ? `題名 ${learningTitles.join('・')}` : '',
       `準備 ${preparationDuration > 0 ? `${preparationDuration.toFixed(2)}秒` : '未登録'}`,
       `キャッチ時刻 ${pointText(catchTimingLabel)}`,
       `キャッチ区間 ${catchText}`,
       `手をつく時刻 ${pointText(handsDownLabel || takeoffStartLabel)}`,
       `テイクオフ ${takeoffText}${takeoffDuration > 0 ? `（所要 ${takeoffDuration.toFixed(2)}秒）` : ''}`,
-    ].join('　／　');
+      takeoffInstances.length ? `テイクオフ正解 ${takeoffInstances.length}件` : '',
+      ridingInstances.length ? `ライディング正解 ${ridingInstances.length}件` : '',
+      turnInstances.length ? `ターン正解 ${turnInstances.length}件` : '',
+    ].filter(Boolean).join('　／　');
     const annotations = document.createElement('p');
     const paddleDescription = example.annotations?.paddle_form?.description;
     const posture = example.annotations?.takeoff_posture || {};
@@ -551,14 +814,24 @@ function renderTrainingExamples() {
         posture.type && `種類 ${posture.type}`,
       ].filter(Boolean).join('・') || '区間のみ登録'}`);
     }
+    if (ridingInstances.length) annotationParts.push(`ライディング区間 ${ridingInstances.length}件`);
+    if (turnInstances.length) {
+      const turnNames = [...new Set(turnInstances.map((instance) => instance.details?.movement_name).filter(Boolean))];
+      annotationParts.push(`ターン・動作: ${turnNames.length ? turnNames.join('・') : `${turnInstances.length}区間`}`);
+    }
     annotations.textContent = annotationParts.join('　／　');
     annotations.classList.toggle('hidden', annotationParts.length === 0);
     const privacy = document.createElement('small');
-    const featureCount = Object.values(example.segment_features || {})
+    const instanceFeatureCount = eventInstances.reduce(
+      (sum, instance) => sum + (Number(instance.features?.sample_count) || 0), 0
+    );
+    const featureCount = instanceFeatureCount || Object.values(example.segment_features || {})
       .reduce((sum, features) => sum + (Number(features?.sample_count) || 0), 0)
       || Number(example.motion_features?.sample_count) || 0;
+    const negativeCount = Object.values(example.negative_learning_sets || {})
+      .reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
     privacy.textContent = featureCount
-      ? `動作特徴 ${featureCount}サンプル保存済み・動画本体は保存していません`
+      ? `動作特徴 ${featureCount}サンプル保存済み${negativeCount ? `・誤検出学習 ${negativeCount}件` : ''}・動画本体は保存していません`
       : '時刻ラベルのみ・動画本体は保存していません';
     header.appendChild(title);
     body.append(header, times, annotations, privacy);
@@ -610,9 +883,40 @@ formCloudAnalyzeBtn.addEventListener('click', async () => {
   formAnalysisResult.classList.add('hidden');
   try {
     const result = await window.api.analyzeFormCloud(payload);
+    const clip = formSourceClip();
+    lastFormAnalysis = { ...result, sourcePath: clip?.path || '' };
+    if (clip) {
+      clip.analysisMarkers = Array.isArray(result.analysis_markers) ? result.analysis_markers : [];
+      clip.lastAnalysis = {
+        totalScore: Number(result.total_score) || 0,
+        level: result.level || '',
+        overallComment: result.overall_comment || '',
+        improvementPoints: Array.isArray(result.improvement_points) ? result.improvement_points : [],
+        analyzedAt: new Date().toISOString(),
+      };
+      scheduleAutosave();
+      renderTimeline();
+    }
+    let historyMessage = '';
+    if (clip && formStudentName.value.trim()) {
+      const saved = await window.api.saveAnalysisHistory({
+        studentName: formStudentName.value.trim(),
+        sourcePath: clip.path,
+        result,
+        takeoffDuration: Number(formTakeoffEnd.value) > Number(formTakeoffStart.value)
+          ? Number(formTakeoffEnd.value) - Number(formTakeoffStart.value) : null,
+      });
+      const timeMessage = saved.takeoff_time_change == null ? ''
+        : saved.takeoff_time_change < 0
+          ? `・テイクオフが${Math.abs(saved.takeoff_time_change).toFixed(2)}秒速くなりました`
+          : `・テイクオフが${saved.takeoff_time_change.toFixed(2)}秒長くなりました`;
+      historyMessage = saved.score_change == null
+        ? ' 生徒履歴に初回結果を保存しました。'
+        : ` 前回比${saved.score_change >= 0 ? '+' : ''}${saved.score_change}点${timeMessage}で履歴保存しました。`;
+    }
     renderAnalysisResult(result, formAnalysisResult);
     formAnalysisResult.classList.remove('hidden');
-    formAnalysisStatus.textContent = 'クラウド解析が完了しました。';
+    formAnalysisStatus.textContent = `クラウド解析が完了しました。${historyMessage}`;
   } catch (error) {
     formAnalysisStatus.textContent = `クラウド解析エラー: ${error.message}`;
   } finally {
@@ -620,14 +924,45 @@ formCloudAnalyzeBtn.addEventListener('click', async () => {
   }
 });
 
+formLessonVideoBtn.addEventListener('click', async () => {
+  const clip = formSourceClip();
+  if (!clip || lastFormAnalysis?.sourcePath !== clip.path) return;
+  formLessonVideoBtn.disabled = true;
+  formAnalysisStatus.textContent = '解析ポイントをスロー再生と停止画にまとめています…';
+  try {
+    const result = await window.api.createLessonVideo({
+      sourcePath: clip.path,
+      trimStart: clip.trimStart,
+      trimEnd: clip.trimEnd,
+      markers: lastFormAnalysis.analysis_markers,
+    });
+    if (!result.canceled) {
+      rememberExportedVideo(result.filePath);
+      formAnalysisStatus.textContent = `${result.segmentCount}個の解析ポイントからレッスン動画を作成しました。`;
+    } else {
+      formAnalysisStatus.textContent = 'レッスン動画の作成をキャンセルしました。';
+    }
+  } catch (error) {
+    formAnalysisStatus.textContent = `レッスン動画を作成できません: ${error.message}`;
+  } finally {
+    formLessonVideoBtn.disabled = !lastFormAnalysis?.analysis_markers?.length;
+  }
+});
+
 formSaveTrainingBtn.addEventListener('click', async () => {
   const clip = formSourceClip();
   if (!clip) return;
+  if (!formLearningTitle.value.trim()) {
+    formSaveStatus.textContent = '学習する題名を入力してください。';
+    formLearningTitle.focus();
+    return;
+  }
   formSaveTrainingBtn.disabled = true;
   formSaveStatus.textContent = '保存しています…';
   try {
     await window.api.saveTrainingExample({
       id: currentTrainingExampleId,
+      learningTitle: formLearningTitle.value.trim(),
       sourcePath: clip.path,
       duration: clip.duration,
       catchStart: formCatchStart.value,
@@ -644,6 +979,29 @@ formSaveTrainingBtn.addEventListener('click', async () => {
 });
 
 refreshTrainingBtn.addEventListener('click', refreshTrainingData);
+refreshAnalysisHistoryBtn.addEventListener('click', refreshAnalysisHistory);
+exportAiBackupBtn.addEventListener('click', async () => {
+  exportAiBackupBtn.disabled = true;
+  aiBackupStatus.textContent = 'バックアップを作成中…';
+  try {
+    const result = await window.api.exportAiDataBackup();
+    aiBackupStatus.textContent = result.canceled ? 'キャンセルしました。' : `学習データ${result.trainingCount}件をバックアップしました。`;
+  } catch (error) { aiBackupStatus.textContent = `バックアップできません: ${error.message}`; }
+  finally { exportAiBackupBtn.disabled = false; }
+});
+importAiBackupBtn.addEventListener('click', async () => {
+  if (!window.confirm('AI学習データ・生徒履歴・参考タグを読み込み、同じIDのデータを更新しますか？\n元動画は変更しません。')) return;
+  importAiBackupBtn.disabled = true;
+  aiBackupStatus.textContent = 'AIデータを復元中…';
+  try {
+    const result = await window.api.importAiDataBackup();
+    if (!result.canceled) {
+      aiBackupStatus.textContent = `学習${result.trainingCount}件・履歴${result.historyCount}件を復元しました。`;
+      await Promise.all([refreshTrainingData(), refreshAnalysisHistory(), refreshReferenceVideos()]);
+    } else aiBackupStatus.textContent = 'キャンセルしました。';
+  } catch (error) { aiBackupStatus.textContent = `復元できません: ${error.message}`; }
+  finally { importAiBackupBtn.disabled = false; }
+});
 
 async function ensureWaveform(filePath) {
   if (!filePath || waveformByPath.has(filePath)) return waveformByPath.get(filePath) || [];
@@ -810,8 +1168,6 @@ async function addFilePaths(paths) {
         speedSegments: [],
       };
       clips.push(clip);
-      ensureWaveform(p);
-      ensurePreviewProxyForClip(clip);
       if (!firstAdded) firstAdded = clip;
       if (clips.length > 1) transitions.push({ type: 'cut', duration: 0.5 });
     } catch (e) {
@@ -889,6 +1245,345 @@ timelineWrap.addEventListener(
   },
   true
 );
+
+function autoCutClipForRange(source, segment, index, mode) {
+  const clip = JSON.parse(JSON.stringify(source));
+  clip.id = nextId++;
+  const label = mode === 'riding' ? 'ライディング' : 'テイクオフ';
+  clip.name = `${source.name}（AI ${label}${index + 1}）`;
+  setClipTrimStart(clip, segment.start);
+  setClipTrimEnd(clip, segment.end);
+  return clip;
+}
+
+function formatAutoCutRange(segment, index) {
+  const confidence = Math.round((Number(segment.confidence) || 0) * 100);
+  return `${index + 1}. ${Number(segment.start).toFixed(2)}〜${Number(segment.end).toFixed(2)}秒（確信度 ${confidence}%）`;
+}
+
+function setAutoCutBusy(busy, mode = null) {
+  autoCutInProgress = busy;
+  autoCutTakeoffBtn.textContent = busy && mode === 'takeoff' ? '解析中…' : 'テイクオフだけ残す';
+  autoCutRidingBtn.textContent = busy && mode === 'riding' ? '解析中…' : 'ライディングを残す';
+  render();
+}
+
+function upsertMotionMarker(clip, marker) {
+  clip.motionMarkers = Array.isArray(clip.motionMarkers) ? clip.motionMarkers : [];
+  clip.motionMarkers = clip.motionMarkers.filter((item) => item.id !== marker.id);
+  clip.motionMarkers.push(marker);
+  clip.motionMarkers.sort((a, b) => Number(a.start) - Number(b.start));
+}
+
+function reviewAutoCutCandidates(source, segments, mode) {
+  return new Promise((resolve) => {
+    const rows = segments.map((segment) => ({
+      originalStart: Number(segment.start),
+      originalEnd: Number(segment.end),
+      start: Number(segment.start),
+      end: Number(segment.end),
+      confidence: Number(segment.confidence) || 0,
+      verdict: 'correct',
+    }));
+    candidateLearningTitle.value = mode === 'riding' ? 'ライディング' : 'テイクオフ';
+    candidateReviewStatus.textContent = '';
+    candidateReviewList.innerHTML = '';
+    candidateReviewVideo.src = 'file://' + encodeURI(source.path);
+    candidateReviewVideo.currentTime = rows[0]?.start || source.trimStart;
+    aiCandidateReviewOverlay.classList.remove('hidden');
+
+    const finish = (value) => {
+      aiCandidateReviewOverlay.classList.add('hidden');
+      candidateReviewVideo.pause();
+      candidateReviewVideo.removeAttribute('src');
+      candidateReviewVideo.load();
+      candidateReviewCloseBtn.onclick = null;
+      candidateReviewCancelBtn.onclick = null;
+      candidateReviewApplyBtn.onclick = null;
+      resolve(value);
+    };
+
+    rows.forEach((row, index) => {
+      const container = document.createElement('div');
+      container.className = 'candidate-review-row';
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.textContent = `▶${index + 1}`;
+      preview.title = `候補${index + 1}を再生位置へ表示`;
+      preview.addEventListener('click', () => {
+        candidateReviewVideo.currentTime = row.start;
+        candidateReviewVideo.play().catch(() => {});
+      });
+      const start = document.createElement('input');
+      start.type = 'number'; start.step = '0.01'; start.min = String(source.trimStart);
+      start.max = String(source.trimEnd); start.value = row.start.toFixed(2);
+      start.title = '開始秒';
+      const end = document.createElement('input');
+      end.type = 'number'; end.step = '0.01'; end.min = String(source.trimStart);
+      end.max = String(source.trimEnd); end.value = row.end.toFixed(2);
+      end.title = '終了秒';
+      const verdict = document.createElement('select');
+      verdict.innerHTML = '<option value="correct">正しい</option><option value="wrong">違う</option>';
+      const sync = () => {
+        row.start = Number(start.value);
+        row.end = Number(end.value);
+        row.verdict = verdict.value;
+        container.classList.toggle('rejected', row.verdict === 'wrong');
+      };
+      [start, end, verdict].forEach((control) => control.addEventListener('input', sync));
+      container.append(preview, start, end, verdict);
+      candidateReviewList.appendChild(container);
+    });
+
+    candidateReviewCloseBtn.onclick = () => finish(null);
+    candidateReviewCancelBtn.onclick = () => finish(null);
+    candidateReviewApplyBtn.onclick = () => {
+      const learningTitle = candidateLearningTitle.value.trim();
+      if (!learningTitle) {
+        candidateReviewStatus.textContent = '学習する題名を入力してください。';
+        candidateLearningTitle.focus();
+        return;
+      }
+      for (const row of rows) {
+        if (!Number.isFinite(row.start) || !Number.isFinite(row.end)
+          || row.start < source.trimStart || row.end > source.trimEnd || row.end - row.start < 0.2) {
+          candidateReviewStatus.textContent = '開始・終了はクリップ範囲内で0.2秒以上にしてください。';
+          return;
+        }
+      }
+      finish({
+        learningTitle,
+        feedback: rows,
+        accepted: rows.filter((row) => row.verdict === 'correct'),
+      });
+    };
+  });
+}
+
+async function saveAutoCutFeedback(source, review, mode) {
+  const event = mode === 'riding' ? 'riding' : 'takeoff';
+  const middlePan = (start, end) => getEffectivePan(source, Math.max(0, ((start + end) / 2) - source.trimStart));
+  for (let index = 0; index < review.feedback.length; index += 1) {
+    const item = review.feedback[index];
+    autoCutStatus.textContent = `確認結果を学習 ${index + 1}/${review.feedback.length}`;
+    const pan = middlePan(item.start, item.end);
+    const payload = {
+      sourcePath: source.path,
+      duration: source.duration,
+      event,
+      learningTitle: review.learningTitle,
+      start: item.start,
+      end: item.end,
+      view: { zoom: source.zoom || 1, panX: pan.x, panY: pan.y },
+    };
+    if (item.verdict === 'correct') {
+      const saved = await window.api.saveTrainingSegment(payload);
+      upsertMotionMarker(source, {
+        id: saved.instance_id, event, title: review.learningTitle,
+        start: item.start, end: item.end,
+      });
+    } else await window.api.saveTrainingFeedback({ ...payload, accepted: false });
+  }
+  scheduleAutosave();
+  renderTimeline();
+}
+
+async function runAutoCut(mode) {
+  const source = selectedClip();
+  if (!source || autoCutInProgress || exporting) return;
+  const label = mode === 'riding' ? 'テイクオフ〜ライディング終了' : 'テイクオフ動作';
+  if (!window.confirm(
+    `${source.name}から複数の「${label}」をMac内AIで探します。\n` +
+    '解析には動画の長さに応じて時間がかかります。開始しますか？\n\n元動画ファイルは変更・削除されません。'
+  )) return;
+
+  setAutoCutBusy(true, mode);
+  autoCutStatus.textContent = '解析用の軽い動画を準備中…';
+  statusText.textContent = `${label}をMac内AIで解析しています…`;
+  try {
+    const analysisPan = getEffectivePan(
+      source,
+      Math.max(0, ((source.trimStart + source.trimEnd) / 2) - source.trimStart)
+    );
+    const result = await window.api.detectAutoCutSegments({
+      path: source.path,
+      trimStart: source.trimStart,
+      trimEnd: source.trimEnd,
+      mode,
+      view: { zoom: source.zoom || 1, panX: analysisPan.x, panY: analysisPan.y },
+    });
+    // Selection may change while a long analysis is running. Apply only to the
+    // clip that started the analysis, never whichever clip is selected later.
+    const currentSource = clips.find((clip) => clip.id === source.id);
+    if (!currentSource) throw new Error('解析中に元のクリップが変更されました。もう一度実行してください。');
+    const segments = normalizeAutoCutSegments(
+      result.segments,
+      currentSource.trimStart,
+      currentSource.trimEnd,
+      mode
+    );
+    if (!segments.length) {
+      autoCutStatus.textContent = '動作を検出できませんでした';
+      statusText.textContent = result.detection_status === 'needs_training'
+        ? '誤カットを防ぐため自動適用しませんでした。この動画で正しい動作区間を学習データに追加してください。'
+        : '対象動作を検出できませんでした。被写体をZoomで大きくして中心に合わせてから再試行してください。';
+      return;
+    }
+
+    const review = await reviewAutoCutCandidates(currentSource, segments, mode);
+    if (!review) {
+      autoCutStatus.textContent = `${segments.length}か所検出・適用はキャンセル`;
+      statusText.textContent = 'AI自動カットの候補はタイムラインへ反映していません。';
+      return;
+    }
+    await saveAutoCutFeedback(currentSource, review, mode);
+    if (!review.accepted.length) {
+      autoCutStatus.textContent = '全候補を「違う」として学習';
+      statusText.textContent = `誤検出${review.feedback.length}件を「${review.learningTitle}ではない」学習データとして保存しました。`;
+      return;
+    }
+
+    pushHistory();
+    const replacements = review.accepted.map((segment, index) => autoCutClipForRange(currentSource, segment, index, mode));
+    const nextTimeline = replaceTimelineClipWithSegments(clips, transitions, currentSource.id, replacements);
+    clips = nextTimeline.clips;
+    transitions = nextTimeline.transitions;
+    exportSelectedClipIds.delete(currentSource.id);
+    replacements.forEach((clip) => exportSelectedClipIds.add(clip.id));
+    sequencePlaying = false;
+    selectClip(replacements[0].id, { seekTo: replacements[0].trimStart });
+    autoCutStatus.textContent = `${replacements.length}クリップ作成・${review.feedback.length}件学習`;
+    statusText.textContent = `${replacements.length}か所の${label}を残し、確認結果を「${review.learningTitle}」として学習しました。`;
+  } catch (error) {
+    autoCutStatus.textContent = '解析できませんでした';
+    statusText.textContent = `AI自動カットエラー: ${error.message}`;
+  } finally {
+    setAutoCutBusy(false);
+  }
+}
+
+autoCutTakeoffBtn.addEventListener('click', () => runAutoCut('takeoff'));
+autoCutRidingBtn.addEventListener('click', () => runAutoCut('riding'));
+
+function waitForAiQueueResume() {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (!aiQueuePaused || aiQueueCancelled) resolve();
+      else setTimeout(check, 250);
+    };
+    check();
+  });
+}
+
+async function reviewQueuedCandidates(job) {
+  const source = clips.find((clip) => clip.id === job.clipId);
+  if (!source) return;
+  const review = await reviewAutoCutCandidates(source, job.segments, job.mode);
+  if (!review) return;
+  await saveAutoCutFeedback(source, review, job.mode);
+  if (!review.accepted.length) {
+    job.status = '誤検出として学習済み';
+    renderAiQueueJobs();
+    return;
+  }
+  pushHistory();
+  const replacements = review.accepted.map((segment, index) => {
+    const clip = autoCutClipForRange(source, segment, index, job.mode);
+    clip.workflowRole = job.role;
+    clip.learningTitle = review.learningTitle;
+    return clip;
+  });
+  const nextTimeline = replaceTimelineClipWithSegments(clips, transitions, source.id, replacements);
+  clips = nextTimeline.clips;
+  transitions = nextTimeline.transitions;
+  replacements.forEach((clip) => exportSelectedClipIds.add(clip.id));
+  selectClip(replacements[0].id, { seekTo: replacements[0].trimStart });
+  job.status = `${replacements.length}件を${job.role === 'learning' ? '学習用' : job.role === 'reference' ? '参考動画候補' : '通常編集'}へ振り分け`;
+  renderAiQueueJobs();
+}
+
+let aiQueueJobs = [];
+function renderAiQueueJobs() {
+  aiQueuePanel.classList.toggle('hidden', !aiQueueRunning && !aiQueueJobs.length);
+  aiQueueList.innerHTML = '';
+  aiQueueJobs.forEach((job) => {
+    const row = document.createElement('div');
+    row.className = 'ai-queue-row';
+    const label = document.createElement('span');
+    label.textContent = `${job.name}: ${job.status}`;
+    row.appendChild(label);
+    if (job.segments?.length && job.status === '確認待ち') {
+      const button = document.createElement('button');
+      button.textContent = `候補${job.segments.length}件を確認`;
+      button.addEventListener('click', () => reviewQueuedCandidates(job));
+      row.appendChild(button);
+    }
+    aiQueueList.appendChild(row);
+  });
+}
+
+async function runBatchAiQueue() {
+  if (aiQueueRunning || exporting || !clips.length) return;
+  const selected = clips.filter((clip) => exportSelectedClipIds.has(clip.id));
+  const targets = selected.length ? selected : [...clips];
+  const mode = batchAiMode.value;
+  const role = batchAiRole.value;
+  aiQueueJobs = targets.map((clip) => ({ clipId: clip.id, name: clip.name, mode, role, status: '待機中', segments: [] }));
+  aiQueueRunning = true;
+  aiQueuePaused = false;
+  aiQueueCancelled = false;
+  batchAiPauseBtn.classList.remove('hidden');
+  batchAiCancelBtn.classList.remove('hidden');
+  batchAiStartBtn.disabled = true;
+  renderAiQueueJobs();
+  try {
+    for (let index = 0; index < aiQueueJobs.length; index += 1) {
+      await waitForAiQueueResume();
+      if (aiQueueCancelled) break;
+      const job = aiQueueJobs[index];
+      const source = clips.find((clip) => clip.id === job.clipId);
+      if (!source) { job.status = '動画なし'; continue; }
+      job.status = 'AI解析中';
+      aiQueueStatus.textContent = `${index + 1}/${aiQueueJobs.length}処理中・残り${aiQueueJobs.length - index - 1}本`;
+      renderAiQueueJobs();
+      try {
+        const pan = getEffectivePan(source, Math.max(0, ((source.trimStart + source.trimEnd) / 2) - source.trimStart));
+        const result = await window.api.detectAutoCutSegments({
+          path: source.path, trimStart: source.trimStart, trimEnd: source.trimEnd, mode,
+          view: { zoom: source.zoom || 1, panX: pan.x, panY: pan.y },
+        });
+        job.segments = normalizeAutoCutSegments(result.segments, source.trimStart, source.trimEnd, mode);
+        job.status = job.segments.length ? '確認待ち' : '候補なし';
+      } catch (error) {
+        job.status = `エラー: ${error.message}`;
+      }
+      renderAiQueueJobs();
+    }
+  } finally {
+    aiQueueRunning = false;
+    batchAiPauseBtn.classList.add('hidden');
+    batchAiCancelBtn.classList.add('hidden');
+    batchAiStartBtn.disabled = false;
+    aiQueueStatus.textContent = aiQueueCancelled ? '中止しました（元動画は変更していません）' : '解析完了・候補を確認してください';
+    renderAiQueueJobs();
+  }
+}
+
+batchAiStartBtn.addEventListener('click', runBatchAiQueue);
+batchAiPauseBtn.addEventListener('click', () => {
+  aiQueuePaused = !aiQueuePaused;
+  batchAiPauseBtn.textContent = aiQueuePaused ? '再開' : '一時停止';
+  aiQueueStatus.textContent = aiQueuePaused ? '一時停止中（現在の1本が終わってから停止）' : '処理を再開しました';
+});
+batchAiCancelBtn.addEventListener('click', () => { aiQueueCancelled = true; aiQueuePaused = false; });
+window.api.onAutoCutProgress((progress) => {
+  if (!autoCutInProgress) return;
+  const current = Number(progress.current) || 1;
+  const total = Number(progress.total) || 1;
+  autoCutStatus.textContent = progress.phase === 'analyze'
+    ? `AI解析 ${current}/${total}`
+    : `準備 ${current}/${total}`;
+});
 
 function removeClip(id) {
   const idx = clips.findIndex((c) => c.id === id);
@@ -1195,10 +1890,13 @@ function render() {
     : '書き出すクリップを選択';
   updateExportSizeEstimate();
   const hasSelectedClip = Boolean(selectedClip());
-  [zoom2xBtn, zoom3xBtn, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
+  [zoom2xBtn, zoom3xBtn, editTrainingTitle, editTrainingEvent, editTrainingStartBtn, editTrainingEndBtn,
     settingScope, applyClipSettingsBtn].forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
+  [autoCutTakeoffBtn, autoCutRidingBtn].forEach((control) => {
+    control.disabled = !hasSelectedClip || exporting || autoCutInProgress || comparisonMode || recordingMode;
+  });
   applyZoomToSelectedBtn.disabled = !hasSelectedClip || exporting || exportSelectedClipIds.size === 0;
-  [editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType]
+  [editTrainingTitle, editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType, editMovementName]
     .forEach((control) => { control.disabled = !hasSelectedClip || exporting; });
   syncEditTrainingEventUI();
   saveProjectBtn.disabled = clips.length === 0 || exporting;
@@ -1746,6 +2444,48 @@ function renderTimeline() {
     block.appendChild(leftHandle);
     block.appendChild(label);
     block.appendChild(rightHandle);
+    (Array.isArray(item.clip.analysisMarkers) ? item.clip.analysisMarkers : []).forEach((analysisMarker) => {
+      const markerTime = Number(analysisMarker.time);
+      const range = Math.max(0.001, item.clip.trimEnd - item.clip.trimStart);
+      if (!Number.isFinite(markerTime) || markerTime < item.clip.trimStart || markerTime > item.clip.trimEnd) return;
+      const analysisPoint = document.createElement('button');
+      analysisPoint.type = 'button';
+      analysisPoint.className = 'tl-analysis-marker';
+      analysisPoint.style.left = `${((markerTime - item.clip.trimStart) / range) * 100}%`;
+      analysisPoint.title = `${fmtTime(markerTime)} ${analysisMarker.label || '解析ポイント'}\n${analysisMarker.comment || ''}`;
+      analysisPoint.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectClip(item.clip.id);
+        previewVideo.currentTime = markerTime;
+        statusText.textContent = `${analysisMarker.label || '解析ポイント'}：${analysisMarker.comment || fmtTime(markerTime)}`;
+      });
+      block.appendChild(analysisPoint);
+    });
+    (Array.isArray(item.clip.motionMarkers) ? item.clip.motionMarkers : []).forEach((motionMarker) => {
+      const start = Number(motionMarker.start);
+      const end = Number(motionMarker.end);
+      const range = Math.max(0.001, item.clip.trimEnd - item.clip.trimStart);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end < item.clip.trimStart || start > item.clip.trimEnd) return;
+      const marker = document.createElement('button');
+      const eventClass = ['preparation', 'catch_timing', 'catch_paddle', 'paddle_form', 'hands_down_timing', 'takeoff', 'takeoff_posture', 'riding', 'turn']
+        .includes(motionMarker.event) ? motionMarker.event : 'movement';
+      marker.type = 'button';
+      marker.className = `tl-motion-marker tl-motion-${eventClass}`;
+      marker.style.left = `${((Math.max(start, item.clip.trimStart) - item.clip.trimStart) / range) * 100}%`;
+      marker.style.width = `${Math.max(1.2, ((Math.min(end, item.clip.trimEnd) - Math.max(start, item.clip.trimStart)) / range) * 100)}%`;
+      marker.title = `${motionMarker.title || motionMarker.event} ${fmtTime(start)}〜${fmtTime(end)}\nクリックして修正`;
+      marker.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectClip(item.clip.id, { seekTo: start });
+        editTrainingTitle.value = motionMarker.title || '';
+        if ([...editTrainingEvent.options].some((option) => option.value === motionMarker.event)) editTrainingEvent.value = motionMarker.event;
+        pendingEditTrainingStart = start;
+        pendingEditTrainingEnd = end;
+        syncEditTrainingEventUI();
+        statusText.textContent = `「${motionMarker.title || motionMarker.event}」の区間を修正できます。`;
+      });
+      block.appendChild(marker);
+    });
     block.draggable = true;
     block.addEventListener('dragstart', (e) => {
       if (e.target.classList.contains('tl-trim-handle')) {
@@ -1964,11 +2704,14 @@ function loadPreviewMediaPath(mediaPath, targetTime, { autoplay = false, playbac
   });
 }
 
-function selectClip(id, { autoplay = false, keepPlayback = false, seekTo = null } = {}) {
+function selectClip(id, { autoplay = false, keepPlayback = false, seekTo = null, generateProxy = true } = {}) {
   const clip = clips.find((c) => c.id === id);
   if (!clip) return;
   const mediaPath = previewMediaPath(clip);
-  ensurePreviewProxyForClip(clip);
+  if (generateProxy) {
+    ensureWaveform(clip.path);
+    ensurePreviewProxyForClip(clip);
+  }
   const samePath = loadedPath === mediaPath;
   const target = seekTo != null ? Math.max(clip.trimStart, Math.min(clip.trimEnd, seekTo)) : clip.trimStart;
   selectedClipId = id;
@@ -2752,10 +3495,12 @@ function editTrainingIsPoint() {
 }
 
 function editTrainingDetailsReady() {
+  if (!editTrainingTitle.value.trim()) return false;
   if (editTrainingEvent.value === 'paddle_form') return Boolean(editPaddleForm.value.trim());
   if (editTrainingEvent.value === 'takeoff_posture') {
     return Boolean(editTakeoffShape.value.trim() || editTakeoffFootwork.value.trim() || editTakeoffType.value.trim());
   }
+  if (editTrainingEvent.value === 'turn') return Boolean(editMovementName.value.trim());
   return true;
 }
 
@@ -2770,6 +3515,7 @@ function syncEditTrainingEventUI() {
   const posture = editTrainingEvent.value === 'takeoff_posture';
   [editTakeoffShape, editTakeoffFootwork, editTakeoffType]
     .forEach((input) => input.classList.toggle('hidden', !posture));
+  editMovementName.classList.toggle('hidden', editTrainingEvent.value !== 'turn');
   updateEditTrainingRange();
 }
 
@@ -2797,7 +3543,7 @@ editTrainingEndBtn.addEventListener('click', () => {
 });
 
 editTrainingEvent.addEventListener('change', syncEditTrainingEventUI);
-[editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType]
+[editTrainingTitle, editPaddleForm, editTakeoffShape, editTakeoffFootwork, editTakeoffType, editMovementName]
   .forEach((input) => input.addEventListener('input', updateEditTrainingRange));
 
 editTrainingSaveBtn.addEventListener('click', async () => {
@@ -2813,30 +3559,43 @@ editTrainingSaveBtn.addEventListener('click', async () => {
   editTrainingSaveBtn.disabled = true;
   statusText.textContent = '選択した動作区間からMac内で特徴を抽出しています…';
   try {
+    const featurePan = getEffectivePan(clip, Math.max(0, ((start + end) / 2) - clip.trimStart));
     const result = await window.api.saveTrainingSegment({
       sourcePath: clip.path,
       duration: clip.duration,
       event: editTrainingEvent.value,
+      learningTitle: editTrainingTitle.value.trim(),
       start,
       end,
+      view: { zoom: clip.zoom || 1, panX: featurePan.x, panY: featurePan.y },
       details: {
         paddleForm: editPaddleForm.value,
         takeoffShape: editTakeoffShape.value,
         takeoffFootwork: editTakeoffFootwork.value,
         takeoffType: editTakeoffType.value,
+        movementName: editMovementName.value,
       },
     });
+    upsertMotionMarker(clip, {
+      id: result.instance_id,
+      event: editTrainingEvent.value,
+      title: result.learning_title,
+      start,
+      end,
+    });
+    scheduleAutosave();
     pendingEditTrainingStart = null;
     pendingEditTrainingEnd = null;
     editPaddleForm.value = '';
     editTakeoffShape.value = '';
     editTakeoffFootwork.value = '';
     editTakeoffType.value = '';
+    editMovementName.value = '';
     updateEditTrainingRange();
     const savedTime = result.mode === 'point'
       ? fmtTime(start)
       : `${fmtTime(start)}〜${fmtTime(end)}（${(end - start).toFixed(2)}秒）`;
-    statusText.textContent = `${result.event_name} ${savedTime}を学習データに追加しました（${result.feature_samples}サンプル）`;
+    statusText.textContent = `「${result.learning_title}」 ${savedTime}を学習データに追加しました（${result.feature_samples}サンプル）`;
     refreshTrainingData();
   } catch (error) {
     statusText.textContent = `学習データを保存できません: ${error.message}`;
@@ -4047,10 +4806,6 @@ async function applyEditingDocument(doc, missingPaths = [], { autosave = false }
     speed: clip.speed || 1,
     speedSegments: Array.isArray(clip.speedSegments) ? clip.speedSegments : [],
   }));
-  clips.forEach((clip) => {
-    ensureWaveform(clip.path);
-    ensurePreviewProxyForClip(clip);
-  });
   exportSelectedClipIds = new Set(
     (Array.isArray(data.exportSelectedClipIds) ? data.exportSelectedClipIds : [])
       .filter((id) => clips.some((clip) => clip.id === id))
@@ -4095,7 +4850,7 @@ async function applyEditingDocument(doc, missingPaths = [], { autosave = false }
   const missing = new Set(missingPaths || []);
   const firstAvailable = clips.find((clip) => !missing.has(clip.path));
   const requested = clips.find((clip) => clip.id === data.selectedClipId && !missing.has(clip.path)) || firstAvailable;
-  if (requested) selectClip(requested.id);
+  if (requested) selectClip(requested.id, { generateProxy: !autosave });
   if (missing.size) {
     statusText.textContent = `${autosave ? '前回の編集を復元しました' : `「${doc.name}」を開きました`}。元動画が${missing.size}個見つかりません。元の場所へ戻すと再び使えます。`;
   } else {
@@ -4171,10 +4926,6 @@ loadProjectBtn.addEventListener('click', async () => {
       speed: clip.speed || 1,
       speedSegments: Array.isArray(clip.speedSegments) ? clip.speedSegments : [],
     }));
-    clips.forEach((clip) => {
-      ensureWaveform(clip.path);
-      ensurePreviewProxyForClip(clip);
-    });
     exportSelectedClipIds = new Set(
       (Array.isArray(data.exportSelectedClipIds) ? data.exportSelectedClipIds : [])
         .filter((id) => clips.some((clip) => clip.id === id))
@@ -4295,6 +5046,7 @@ function rememberExportedVideo(filePath) {
   localStorage.setItem('lastExportedPath', filePath);
   analyzeExportBtn.disabled = false;
   analyzeExportBtn.title = `解析する動画: ${filePath.split('/').pop()}`;
+  updateReferenceLatestUI();
 }
 
 function addAnalysisMetric(container, label, value) {
@@ -4411,6 +5163,7 @@ saveReferenceBtn.addEventListener('click', async () => {
       description: referenceDescriptionInput.value.trim(),
     });
     referenceSaveStatus.textContent = `保存しました（ID: ${result.id}／${result.frame_count}フレーム）`;
+    refreshReferenceVideos();
   } catch (error) {
     referenceSaveStatus.textContent = error.message;
   } finally {

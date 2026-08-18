@@ -94,6 +94,13 @@ footwork, and takeoff-type fields. `takeoff_duration_seconds` and
 `example.metrics`; never ask the user to calculate these manually. Training
 schema version 2 is additive and must preserve older travel/catch/takeoff data.
 
+Every newly saved training interval requires a user-entered `learning_title`
+(for example `テイクオフ`, `アップス`, or `パドル`). Store that title on the
+event instance and in `example.learning_sets[title]`; never collapse differently
+titled movements into one training bucket. Legacy `event` and
+`segment_features` fields remain for backward-compatible takeoff/riding
+detection, and older untitled examples must continue to load unchanged.
+
 Zoom has direct 2x and 3x preset buttons. The `設定の適用先` control copies the
 active clip's current zoom/static pan, pan-animation keyframes, whole-clip
 speed, and speed segments to the current, checkbox-selected, or all clips.
@@ -231,12 +238,19 @@ audio so trim, skim, J/K/L, 10x/16x playback, waveform alignment, and two-screen
 comparison still use source timestamps. Normal export, AI analysis, auto-track,
 and screen-recording mode always use the original source; recording switches
 back to the proxy afterward. `preview-proxy.js` prunes at app launch and after
-proxy access to at most 12 inactive files / about 4 GB, while active-session
+proxy access to at most 6 inactive files / about 1 GB, while active-session
 paths are protected. Cache cleanup deletes only derived proxies, never source
 or exported video.
 Proxy encodes are queued one at a time to avoid making the Mac fan spin up from
 several simultaneous 4K decodes. Cache cleanup advances a generation token so
 queued/finishing proxy jobs cannot recreate files immediately after deletion.
+Project and autosave restore must not eagerly queue proxies for every clip.
+Generate a proxy only when a clip is selected or used in two-screen editing;
+otherwise a large restored project can keep ffmpeg busy for hours at launch.
+The automatically restored selected clip is loaded from its original media
+without starting a proxy encode; an explicit later clip click may generate it.
+Waveforms follow the same lazy policy and are generated only when a clip is
+selected, not eagerly for every clip while restoring a large project.
 
 `main.js` makes at most a 50-second, 640px/6fps/no-audio proxy for each side in
 the Electron temp directory. A clip of 60 seconds or less uses its complete
@@ -619,6 +633,8 @@ The integration uses these existing endpoints on `http://127.0.0.1:8000`:
 - `POST /api/analyze` with multipart `file` analyzes scenes and scores.
 - `POST /api/reference/upload` with multipart `file`, required `name`, and
   optional `description` stores the same export as a reference video.
+- `GET /api/reference/list` lists comparison references and
+  `DELETE /api/reference/<id>` removes only the selected reference record.
 
 Network access follows the existing Electron IPC boundary. `renderer.js`
 remembers each successful normal, selected-clip, comparison, and screen-
@@ -631,6 +647,18 @@ reference `preview` fields are removed before the result crosses IPC.
 `index.html` and `style.css` contain the export-panel button and result/reference
 modal. Keep the endpoint host fixed to localhost unless the trust and IPC
 model is deliberately revisited.
+
+The `解析データ` workspace deliberately separates two data purposes. `学習データ`
+stores only confirmed intervals and derived local features for improving event
+detection; it never stores a video copy. `参考動画` stores analyzer-generated
+comparison frames from the most recently exported video and is used as the
+expert/example side of student comparisons. It is not fed into the local
+auto-cut training library. The reference section can register the latest
+export without first running cloud analysis, list existing references, and
+delete one reference through main/preload IPC. Deleting a reference never
+deletes the original or exported video. Keep these labels and stores visibly
+separate so coaches do not accidentally treat an ordinary training label as a
+student-comparison reference.
 
 ### Integrated form-analysis workspace and verified labels
 
@@ -654,7 +682,8 @@ main/preload IPC boundary:
 
 User-confirmed labels are stored at
 `<app.getPath('userData')>/ai-training/surfing-event-labels.json`. The schema
-separates `travel_paddle`, `catch_paddle`, and `takeoff`; takeoff starts when
+is currently v3 and separates `travel_paddle`, `catch_paddle`, `takeoff`,
+`riding`, and named `turn` movements; takeoff starts when
 the hands touch the board and ends when the hands leave it. `main.js` owns all
 reads, atomic writes, validation, and deletion through `list-training-data`,
 `save-training-example`, and `delete-training-example`. Saving stores the
@@ -676,11 +705,69 @@ compare motion patterns rather than treating seconds as transferable facts.
 Far-away surfers may produce zero pose coverage; keep the motion/visual
 features and report that honestly instead of fabricating joint data.
 
+Schema v3 adds `event_instances`: one source video may accumulate any number
+of independently verified intervals for the same event instead of replacing
+the previous interval. Each instance has its own derived features and stable
+ID. `save-training-segment` appends takeoff, riding, and named turn examples;
+re-saving the same event/range within 0.05 seconds updates that instance.
+Legacy `segments`, `labels`, `motion_features`, and `segment_features` remain
+for backward compatibility and are migrated without deleting prior data.
+When the editor Zoom is above 1x, feature extraction crops around the current
+keyframed center first so a distant surfer can produce useful pose features.
+
 `catch_paddle` is optional because the user also supplies takeoff-only
 examples. An empty catch field saves only the `takeoff` segment and its two
 boundary labels. If catch is supplied, validation still requires
 `catch start <= takeoff start < takeoff end` and stores travel/catch/takeoff
 segments separately.
+
+### Local AI multi-event auto-cut
+
+The editor action strip exposes `テイクオフだけ残す` and
+`ライディングを残す`. `renderer.js` asks for confirmation, calls the
+`detectAutoCutSegments` preload API, previews all detected ranges, and only
+then replaces the selected timeline clip with independent retained clips.
+The source media is never modified or deleted, and the edit can be undone
+with Z. A single long source may produce any number of retained clips.
+
+`main.js` implements `detect-auto-cut-segments`. It analyzes the selected
+trim range as 300-second temporary proxies with an 8-second overlap, passes
+the current Zoom/center crop, calls `POST /api/segments/local`, offsets each
+result back to source time, and removes every proxy. Renderer normalization
+merges duplicate detections at chunk boundaries. The FastAPI endpoint and
+feature matching live in
+`/Users/ishidanaoki/surfing-analyzer/backend/main.py` and require the same
+localhost backend startup command documented above.
+
+Detection compares motion, compact visual descriptors, and MediaPipe pose
+templates rather than copying saved timestamps. A verified same-source event
+can be rediscovered from its visual sequence. An unseen source is accepted
+only when at least three independently verified source videos agree with high
+similarity; otherwise the
+API returns `needs_training` and the app asks the user to label the correct
+interval. This conservative rule is intentional because false destructive
+cuts from waves, camera movement, or later turns are worse than returning no
+candidate. Riding labels directly teach start-to-end intervals; without a
+verified riding label, the detector extends a learned takeoff until sustained
+quiet motion or the next detected takeoff. Add regression footage before
+loosening these thresholds.
+
+Candidate detections must pass through the confirmation overlay before they
+replace timeline clips. Corrected ranges are stored under `learning_sets` by
+the user-entered title (for example テイクオフ, アップス, or パドル), while
+rejected candidates go to `negative_learning_sets` and suppress similar false
+positives. The renderer-managed batch queue analyzes selected export clips, or
+all clips when none are selected, one at a time and leaves every result in
+`確認待ち`; pause/cancel applies between videos so a running local analysis is
+allowed to finish safely. Confirmed batch clips retain `workflowRole` as
+`normal`, `learning`, or `reference`.
+
+Reference search tags are stored separately from the analyzer's frame-heavy
+reference JSON. The AI-data backup intentionally exports only training JSON,
+analysis history, reference tags, and reference catalog metadata—never source
+videos or reference frames—so backup and Mac-to-Mac transfer stay small.
+Motion ranges are saved on clips as `motionMarkers` and rendered as colored
+timeline intervals; keep this field in autosave/project migrations.
 
 ## Free GitHub Releases updater
 

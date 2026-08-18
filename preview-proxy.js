@@ -11,8 +11,8 @@ function proxyCacheKey(filePath) {
 }
 
 function pruneProxyCache(dir, options = {}) {
-  const maxFiles = Math.max(1, Number(options.maxFiles) || 12);
-  const maxBytes = Math.max(1, Number(options.maxBytes) || 4 * 1024 * 1024 * 1024);
+  const maxFiles = Math.max(1, Number(options.maxFiles) || 6);
+  const maxBytes = Math.max(1, Number(options.maxBytes) || 1024 * 1024 * 1024);
   const keepPaths = new Set(options.keepPaths || []);
   if (options.keepPath) keepPaths.add(options.keepPath);
   let entries = [];

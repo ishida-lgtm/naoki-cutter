@@ -23,11 +23,134 @@ let exportCancelled = false;
 const waveformCache = new Map();
 const recordingSessions = new Map();
 const previewProxyJobs = new Map();
+const activePreviewProxyProcs = new Set();
 const activePreviewProxyPaths = new Set();
 let previewProxyQueue = Promise.resolve();
 let previewProxyEpoch = 0;
+
+function cancelPreviewProxyEncodes() {
+  previewProxyEpoch += 1;
+  for (const child of activePreviewProxyProcs) {
+    // VideoToolbox ffmpeg may outlive Electron after SIGTERM. These processes
+    // write only disposable app-owned proxies, so force-stop them on quit.
+    try { child.kill('SIGKILL'); } catch {}
+  }
+  activePreviewProxyProcs.clear();
+}
 const SURF_ANALYZER_HOST = '127.0.0.1';
 const SURF_ANALYZER_PORT = 8000;
+const SURF_ANALYZER_BACKEND = process.env.SURF_ANALYZER_BACKEND
+  || '/Users/ishidanaoki/surfing-analyzer/backend';
+let surfAnalyzerProc = null;
+let surfAnalyzerStartPromise = null;
+
+function emitSurfAnalyzerStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('surf-analyzer-status', status);
+  return status;
+}
+
+function probeSurfAnalyzer(timeout = 1500) {
+  return new Promise((resolve) => {
+    const request = http.get({
+      host: SURF_ANALYZER_HOST,
+      port: SURF_ANALYZER_PORT,
+      path: '/health',
+      timeout,
+    }, (response) => {
+      response.resume();
+      resolve(response.statusCode >= 200 && response.statusCode < 300);
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => resolve(false));
+  });
+}
+
+function readAnalyzerEnvironment() {
+  const env = { ...process.env, MPLCONFIGDIR: path.join(app.getPath('temp'), 'naoki-matplotlib') };
+  const envPath = path.join(SURF_ANALYZER_BACKEND, '.env');
+  try {
+    for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+      const match = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+      if (!match) continue;
+      const value = match[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+      if (match[1] === 'ANTHROPIC_API_KEY') env[match[1]] = value;
+    }
+  } catch {}
+  return env;
+}
+
+async function startSurfAnalyzer({ restart = false } = {}) {
+  if (surfAnalyzerStartPromise && !restart) return surfAnalyzerStartPromise;
+  surfAnalyzerStartPromise = (async () => {
+    if (await probeSurfAnalyzer()) return emitSurfAnalyzerStatus({ state: 'ready', managed: false });
+    if (restart && surfAnalyzerProc) {
+      surfAnalyzerProc.kill('SIGTERM');
+      surfAnalyzerProc = null;
+    }
+    const executable = path.join(SURF_ANALYZER_BACKEND, 'venv', 'bin', 'uvicorn');
+    const mainFile = path.join(SURF_ANALYZER_BACKEND, 'main.py');
+    if (!fs.existsSync(executable) || !fs.existsSync(mainFile)) {
+      return emitSurfAnalyzerStatus({ state: 'missing', message: 'フォーム解析AIがこのMacに見つかりません' });
+    }
+    emitSurfAnalyzerStatus({ state: 'starting', message: 'フォーム解析AIを準備中…' });
+    surfAnalyzerProc = spawn(executable, [
+      'main:app', '--app-dir', SURF_ANALYZER_BACKEND,
+      '--host', SURF_ANALYZER_HOST, '--port', String(SURF_ANALYZER_PORT),
+    ], {
+      cwd: SURF_ANALYZER_BACKEND,
+      env: readAnalyzerEnvironment(),
+      stdio: 'ignore',
+    });
+    surfAnalyzerProc.once('exit', () => {
+      surfAnalyzerProc = null;
+      probeSurfAnalyzer().then((ready) => emitSurfAnalyzerStatus({
+        state: ready ? 'ready' : 'stopped',
+        message: ready ? '' : 'フォーム解析AIが停止しました',
+      }));
+    });
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (await probeSurfAnalyzer(500)) return emitSurfAnalyzerStatus({ state: 'ready', managed: true });
+      if (!surfAnalyzerProc) break;
+    }
+    return emitSurfAnalyzerStatus({ state: 'error', message: 'フォーム解析AIを起動できませんでした' });
+  })();
+  try { return await surfAnalyzerStartPromise; }
+  finally { surfAnalyzerStartPromise = null; }
+}
+
+function requestSurfAnalyzer(endpoint, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: SURF_ANALYZER_HOST,
+      port: SURF_ANALYZER_PORT,
+      path: endpoint,
+      method,
+      headers: { Accept: 'application/json' },
+      timeout: 30 * 1000,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        let data;
+        try { data = body ? JSON.parse(body) : {}; }
+        catch { data = { detail: body || '解析アプリから不正な応答が返りました' }; }
+        if (response.statusCode >= 200 && response.statusCode < 300) resolve(data);
+        else reject(new Error(data.detail || `解析アプリのエラー (${response.statusCode})`));
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('解析アプリからの応答に時間がかかりすぎました。')));
+    request.on('error', (error) => {
+      if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH'].includes(error.code)) {
+        reject(new Error('解析アプリが起動していません。surfing-analyzerでuvicornを起動してください。'));
+      } else {
+        reject(error);
+      }
+    });
+    request.end();
+  });
+}
 const updater = createUpdater({ app, getMainWindow: () => mainWindow });
 
 ipcMain.handle('check-for-update', () => updater.check());
@@ -193,7 +316,9 @@ function createSyncProxy(source, outputPath) {
 }
 
 ipcMain.handle('auto-sync-comparison', async (event, payload) => {
-  const allowedModes = new Set(['takeoff_start', 'hands_down', 'standing']);
+  const allowedModes = new Set([
+    'catch_start', 'takeoff_start', 'hands_down', 'standing', 'takeoff_end', 'bottom_turn', 'turn_start',
+  ]);
   if (!payload?.left?.path || !payload?.right?.path || !allowedModes.has(payload.mode)) {
     throw new Error('AI同期の設定が正しくありません。');
   }
@@ -228,6 +353,122 @@ ipcMain.handle('auto-sync-comparison', async (event, payload) => {
   }
 });
 
+function createAutoCutProxy(sourcePath, start, duration, outputPath, view = null) {
+  return new Promise((resolve, reject) => {
+    const zoom = Math.max(1, Math.min(6, Number(view?.zoom) || 1));
+    const rawPanX = Number(view?.panX);
+    const rawPanY = Number(view?.panY);
+    const panX = Math.max(0, Math.min(1, Number.isFinite(rawPanX) ? rawPanX : 0.5));
+    const panY = Math.max(0, Math.min(1, Number.isFinite(rawPanY) ? rawPanY : 0.5));
+    const crop = zoom > 1.001
+      ? `crop=w='iw/${zoom}':h='ih/${zoom}':x='clip(iw*${panX}-ow/2,0,iw-ow)':y='clip(ih*${panY}-oh/2,0,ih-oh)',`
+      : '';
+    const args = [
+      '-y', '-v', 'error', '-ss', String(start), '-t', String(duration), '-i', sourcePath,
+      '-an', '-vf', `${crop}fps=5,scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30', '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart', outputPath,
+    ];
+    const proc = spawn(FFMPEG, args);
+    activePreviewProxyProcs.add(proc);
+    let stderr = '';
+    const timeout = setTimeout(() => proc.kill('SIGKILL'), 10 * 60 * 1000);
+    proc.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+    proc.on('error', (error) => {
+      clearTimeout(timeout);
+      activePreviewProxyProcs.delete(proc);
+      reject(error);
+    });
+    proc.on('close', (code, signal) => {
+      clearTimeout(timeout);
+      activePreviewProxyProcs.delete(proc);
+      if (code !== 0 || !fs.existsSync(outputPath)) {
+        reject(new Error(signal === 'SIGKILL'
+          ? 'AI解析用動画の準備に時間がかかりすぎたため中止しました。'
+          : `AI解析用動画を準備できませんでした。${stderr}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+ipcMain.handle('detect-auto-cut-segments', async (event, payload) => {
+  const allowedModes = new Set(['takeoff', 'riding']);
+  if (!payload?.path || !fs.existsSync(payload.path)) throw new Error('解析する元動画が見つかりません。');
+  if (!allowedModes.has(payload.mode)) throw new Error('AI自動カットの種類が正しくありません。');
+  const trimStart = Math.max(0, Number(payload.trimStart) || 0);
+  const trimEnd = Math.max(trimStart, Number(payload.trimEnd) || trimStart);
+  if (trimEnd - trimStart < 1) throw new Error('AI自動カットするクリップが短すぎます。');
+
+  // Long camera files are analyzed in bounded, overlapping chunks. This keeps
+  // proxy size and backend memory stable while still allowing one source file
+  // to contain any number of takeoffs. The overlap prevents an event on a
+  // chunk boundary from being cut in half; renderer-side normalization merges
+  // the duplicate candidate afterward.
+  const CHUNK_SECONDS = 300;
+  const OVERLAP_SECONDS = 8;
+  const step = CHUNK_SECONDS - OVERLAP_SECONDS;
+  const chunkStarts = [];
+  for (let start = trimStart; start < trimEnd - 0.1; start += step) chunkStarts.push(start);
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-auto-cut-'));
+  const segments = [];
+  const detectionStatuses = new Set();
+  let engine = 'ローカル姿勢・動きAI（MediaPipe Pose）';
+  let verifiedExampleCount = 0;
+  try {
+    for (let index = 0; index < chunkStarts.length; index += 1) {
+      const chunkStart = chunkStarts[index];
+      const chunkEnd = Math.min(trimEnd, chunkStart + CHUNK_SECONDS);
+      const proxyPath = path.join(tempDir, `chunk-${index}.mp4`);
+      mainWindow?.webContents.send('auto-cut-progress', {
+        phase: 'proxy', current: index + 1, total: chunkStarts.length,
+      });
+      await createAutoCutProxy(payload.path, chunkStart, chunkEnd - chunkStart, proxyPath, payload.view);
+      mainWindow?.webContents.send('auto-cut-progress', {
+        phase: 'analyze', current: index + 1, total: chunkStarts.length,
+      });
+      const result = await postMultipartToSurfAnalyzer('/api/segments/local', proxyPath, {
+        mode: payload.mode,
+        source_name: path.basename(payload.path),
+      });
+      engine = result.engine || engine;
+      verifiedExampleCount = Math.max(verifiedExampleCount, Number(result.verified_example_count) || 0);
+      if (result.detection_status) detectionStatuses.add(result.detection_status);
+      for (const segment of Array.isArray(result.segments) ? result.segments : []) {
+        const addOffset = (value) => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+          ? chunkStart + Number(value) : null;
+        const start = addOffset(segment.start);
+        const end = addOffset(segment.end);
+        if (start === null || end === null) continue;
+        segments.push({
+          ...segment,
+          start,
+          end,
+          takeoff_start: addOffset(segment.takeoff_start),
+          takeoff_end: addOffset(segment.takeoff_end),
+        });
+      }
+      fs.rmSync(proxyPath, { force: true });
+    }
+    return {
+      mode: payload.mode,
+      segments,
+      analyzed_start: trimStart,
+      analyzed_end: trimEnd,
+      chunk_count: chunkStarts.length,
+      engine,
+      verified_example_count: verifiedExampleCount,
+      detection_status: segments.length
+        ? 'detected'
+        : (detectionStatuses.has('needs_training') ? 'needs_training' : [...detectionStatuses][0] || 'not_detected'),
+      privacy: 'local_only',
+    };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 function trainingDataDir() {
   return path.join(app.getPath('userData'), 'ai-training');
 }
@@ -236,9 +477,46 @@ function trainingDataPath() {
   return path.join(trainingDataDir(), 'surfing-event-labels.json');
 }
 
+function analysisHistoryPath() {
+  return path.join(app.getPath('userData'), 'analysis-history.json');
+}
+
+function readAnalysisHistory() {
+  try {
+    const data = JSON.parse(fs.readFileSync(analysisHistoryPath(), 'utf8'));
+    return Array.isArray(data.records) ? data.records : [];
+  } catch { return []; }
+}
+
+function writeAnalysisHistory(records) {
+  const target = analysisHistoryPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ version: 1, records: records.slice(-500) }, null, 2));
+  fs.renameSync(temporary, target);
+}
+
+function referenceTagsPath() {
+  return path.join(app.getPath('userData'), 'reference-tags.json');
+}
+
+function readReferenceTags() {
+  try {
+    const data = JSON.parse(fs.readFileSync(referenceTagsPath(), 'utf8'));
+    return data && typeof data.tags === 'object' ? data.tags : {};
+  } catch { return {}; }
+}
+
+function writeReferenceTags(tags) {
+  const target = referenceTagsPath();
+  const temporary = `${target}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify({ version: 1, tags }, null, 2));
+  fs.renameSync(temporary, target);
+}
+
 function emptyTrainingData() {
   return {
-    schema_version: 2,
+    schema_version: 3,
     updated_at: new Date().toISOString(),
     privacy: {
       stores_video: false,
@@ -255,6 +533,8 @@ function emptyTrainingData() {
       takeoff_start_hands_down: '手をボードについてテイクオフ動作を開始した瞬間',
       takeoff_end_hands_release: '手がボードから離れてテイクオフ動作が終了した瞬間',
       takeoff_posture: 'テイクオフの形・足の出し方・種類',
+      riding: 'テイクオフ後からライディング終了までの動作',
+      turn: 'ライディング中のターン区間と動作名',
     },
     examples: [],
   };
@@ -272,20 +552,39 @@ function readTrainingData() {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     if (!data || !Array.isArray(data.examples)) throw new Error('examples missing');
     let migrated = false;
-    const examples = data.examples.map((example) => {
-      if (example.id) return example;
-      migrated = true;
-      return { ...example, id: crypto.randomUUID() };
+    const examples = data.examples.map((original) => {
+      const example = { ...original };
+      if (!example.id) {
+        example.id = crypto.randomUUID();
+        migrated = true;
+      }
+      if (!Array.isArray(example.event_instances)) {
+        example.event_instances = (example.segments || []).map((segment) => {
+          const features = example.segment_features?.[segment.event]
+            || (segment.event === 'takeoff' ? example.motion_features : null);
+          return {
+            id: crypto.randomUUID(),
+            event: segment.event,
+            start_seconds: segment.start_seconds,
+            end_seconds: segment.end_seconds,
+            features: features || null,
+            verified_by_user: true,
+            migrated_from_legacy: true,
+          };
+        });
+        migrated = true;
+      }
+      return example;
     });
     const defaults = emptyTrainingData();
     const normalized = {
       ...defaults,
       ...data,
-      schema_version: 2,
+      schema_version: 3,
       definitions: { ...defaults.definitions, ...(data.definitions || {}) },
       examples,
     };
-    if (migrated || data.schema_version !== 2) writeTrainingData(normalized);
+    if (migrated || data.schema_version !== 3) writeTrainingData(normalized);
     return normalized;
   } catch {
     throw new Error('AI学習データが壊れています。ファイルを確認してください。');
@@ -316,12 +615,20 @@ function safeTrainingText(value, maxLength = 200) {
   return String(value || '').trim().slice(0, maxLength);
 }
 
-function createTrainingFeatureProxy(sourcePath, start, end, outputPath) {
+function createTrainingFeatureProxy(sourcePath, start, end, outputPath, view = null) {
   const duration = end - start;
   if (duration < 0.2) throw new Error('学習する動作区間が短すぎます。');
+  const zoom = Math.max(1, Math.min(6, Number(view?.zoom) || 1));
+  const rawPanX = Number(view?.panX);
+  const rawPanY = Number(view?.panY);
+  const panX = Math.max(0, Math.min(1, Number.isFinite(rawPanX) ? rawPanX : 0.5));
+  const panY = Math.max(0, Math.min(1, Number.isFinite(rawPanY) ? rawPanY : 0.5));
+  const crop = zoom > 1.001
+    ? `crop=w='iw/${zoom}':h='ih/${zoom}':x='clip(iw*${panX}-ow/2,0,iw-ow)':y='clip(ih*${panY}-oh/2,0,ih-oh)',`
+    : '';
   const result = spawnSync(FFMPEG, [
     '-y', '-v', 'error', '-ss', String(start), '-t', String(duration), '-i', sourcePath,
-    '-an', '-vf', 'fps=8,scale=640:-2', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+    '-an', '-vf', `${crop}fps=8,scale=640:-2`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
     '-pix_fmt', 'yuv420p', '-movflags', '+faststart', outputPath,
   ], { encoding: 'utf8' });
   if (result.status !== 0 || !fs.existsSync(outputPath)) {
@@ -337,6 +644,8 @@ ipcMain.handle('save-training-example', async (event, payload) => {
   }
   const duration = Number(payload.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
+  const learningTitle = safeTrainingText(payload.learningTitle, 80);
+  if (!learningTitle) throw new Error('学習する題名を入力してください。');
   const hasCatch = payload.catchStart !== '' && payload.catchStart !== null && payload.catchStart !== undefined;
   const catchStart = hasCatch ? safeTrainingTime(payload.catchStart, duration, 'キャッチ開始') : null;
   const takeoffStart = safeTrainingTime(payload.takeoffStart, duration, 'テイクオフ開始');
@@ -367,7 +676,8 @@ ipcMain.handle('save-training-example', async (event, payload) => {
       { event: 'catch_paddle', start_seconds: catchStart, end_seconds: takeoffStart },
     );
   }
-  segments.push({ event: 'takeoff', start_seconds: takeoffStart, end_seconds: takeoffEnd });
+  segments.push({ event: 'takeoff', learning_title: learningTitle, start_seconds: takeoffStart, end_seconds: takeoffEnd });
+  const formTakeoffInstanceId = crypto.randomUUID();
   const example = {
     id: payload.id && /^[a-zA-Z0-9-]+$/.test(payload.id) ? payload.id : crypto.randomUUID(),
     source_name: path.basename(payload.sourcePath),
@@ -376,12 +686,22 @@ ipcMain.handle('save-training-example', async (event, payload) => {
     duration_seconds: Math.round(duration * 1000) / 1000,
     segments,
     labels: [
-      { event: 'takeoff_start_hands_down', time_seconds: takeoffStart },
-      { event: 'takeoff_end_hands_release', time_seconds: takeoffEnd },
+      { event: 'takeoff_start_hands_down', time_seconds: takeoffStart, instance_id: formTakeoffInstanceId },
+      { event: 'takeoff_end_hands_release', time_seconds: takeoffEnd, instance_id: formTakeoffInstanceId },
     ],
     verified_by_user: true,
     motion_features: motionFeatures,
     segment_features: { takeoff: motionFeatures },
+    event_instances: [{
+      id: formTakeoffInstanceId,
+      event: 'takeoff',
+      learning_title: learningTitle,
+      start_seconds: takeoffStart,
+      end_seconds: takeoffEnd,
+      features: motionFeatures,
+      verified_by_user: true,
+      updated_at: new Date().toISOString(),
+    }],
     metrics: {
       takeoff_duration_seconds: Math.round((takeoffEnd - takeoffStart) * 1000) / 1000,
     },
@@ -393,20 +713,45 @@ ipcMain.handle('save-training-example', async (event, payload) => {
   if (existingIndex >= 0) {
     const existing = data.examples[existingIndex];
     if (existing.id) example.id = existing.id;
+    const matchingTakeoff = (existing.event_instances || []).find((instance) =>
+      instance.event === 'takeoff'
+      && (instance.learning_title || 'テイクオフ') === learningTitle
+      && Math.abs(Number(instance.start_seconds) - takeoffStart) < 0.05
+      && Math.abs(Number(instance.end_seconds) - takeoffEnd) < 0.05
+    );
+    if (matchingTakeoff) example.event_instances[0].id = matchingTakeoff.id;
+    example.event_instances = [
+      ...(existing.event_instances || []).filter((instance) => instance.id !== example.event_instances[0].id),
+      example.event_instances[0],
+    ];
     example.segments = [
-      ...(existing.segments || []).filter((segment) => !['travel_paddle', 'catch_paddle', 'takeoff'].includes(segment.event)),
+      ...(existing.segments || []).filter((segment) => {
+        if (['travel_paddle', 'catch_paddle'].includes(segment.event)) return false;
+        return !(segment.event === 'takeoff'
+          && Math.abs(Number(segment.start_seconds) - takeoffStart) < 0.05
+          && Math.abs(Number(segment.end_seconds) - takeoffEnd) < 0.05);
+      }),
       ...segments,
     ].sort((a, b) => a.start_seconds - b.start_seconds);
     example.labels = [
-      ...(existing.labels || []).filter((label) => ![
-        'takeoff_start_hands_down', 'takeoff_end_hands_release',
-      ].includes(label.event)),
-      ...example.labels,
+      ...(existing.labels || []).filter((label) => !(
+        ['takeoff_start_hands_down', 'takeoff_end_hands_release'].includes(label.event)
+        && (Math.abs(Number(label.time_seconds) - takeoffStart) < 0.05
+          || Math.abs(Number(label.time_seconds) - takeoffEnd) < 0.05)
+      )),
+      ...example.labels.map((label) => ({ ...label, instance_id: example.event_instances[0].id })),
     ];
     example.annotations = { ...(existing.annotations || {}) };
     example.segment_features = { ...(existing.segment_features || {}), takeoff: motionFeatures };
     example.metrics = { ...(existing.metrics || {}), ...example.metrics };
+    example.learning_sets = { ...(existing.learning_sets || {}) };
   }
+  example.learning_sets = { ...(example.learning_sets || {}) };
+  const titleSet = Array.isArray(example.learning_sets[learningTitle]) ? example.learning_sets[learningTitle] : [];
+  example.learning_sets[learningTitle] = [
+    ...titleSet.filter((item) => item.id !== example.event_instances[0].id),
+    example.event_instances[0],
+  ];
   if (existingIndex >= 0) data.examples[existingIndex] = example;
   else data.examples.push(example);
   writeTrainingData(data);
@@ -422,12 +767,16 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
     hands_down_timing: { name: '手をつくタイミング', mode: 'point' },
     takeoff: { name: 'テイクオフ動作', mode: 'interval' },
     takeoff_posture: { name: 'テイクオフの姿勢', mode: 'interval' },
+    riding: { name: 'ライディング', mode: 'interval' },
+    turn: { name: 'ターン・動作', mode: 'interval' },
   };
   if (!payload?.sourcePath || !fs.existsSync(payload.sourcePath)) {
     throw new Error('学習元の動画が見つかりません。');
   }
   const config = eventConfigs[payload.event];
   if (!config) throw new Error('学習する動作が正しくありません。');
+  const learningTitle = safeTrainingText(payload.learningTitle, 80);
+  if (!learningTitle) throw new Error('学習する題名を入力してください。');
   const duration = Number(payload.duration);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
   const start = safeTrainingTime(payload.start, duration, '学習区間の開始');
@@ -441,11 +790,15 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
   const takeoffShape = safeTrainingText(payload.details?.takeoffShape, 120);
   const takeoffFootwork = safeTrainingText(payload.details?.takeoffFootwork, 120);
   const takeoffType = safeTrainingText(payload.details?.takeoffType, 120);
+  const movementName = safeTrainingText(payload.details?.movementName, 120);
   if (payload.event === 'paddle_form' && !paddleForm) {
     throw new Error('パドルの形を入力してください。');
   }
   if (payload.event === 'takeoff_posture' && !takeoffShape && !takeoffFootwork && !takeoffType) {
     throw new Error('テイクオフの形・足の出し方・種類のいずれかを入力してください。');
+  }
+  if (payload.event === 'turn' && !movementName) {
+    throw new Error('ターン・動作名を入力してください。');
   }
 
   let featureStart = start;
@@ -463,7 +816,7 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
   const proxyPath = path.join(tempDir, `${payload.event}.mp4`);
   let features;
   try {
-    createTrainingFeatureProxy(payload.sourcePath, featureStart, featureEnd, proxyPath);
+    createTrainingFeatureProxy(payload.sourcePath, featureStart, featureEnd, proxyPath, payload.view);
     features = await postMultipartToSurfAnalyzer('/api/training/features', proxyPath);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -493,9 +846,43 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
   example.source_identity = identity;
   example.source_path = path.resolve(payload.sourcePath);
   example.duration_seconds = Math.round(duration * 1000) / 1000;
+  example.event_instances = Array.isArray(example.event_instances) ? example.event_instances : [];
+  const matchingInstanceIndex = example.event_instances.findIndex((instance) =>
+    instance.event === payload.event
+    && (instance.learning_title || config.name) === learningTitle
+    && Math.abs(Number(instance.start_seconds) - start) < 0.05
+    && Math.abs(Number(instance.end_seconds) - end) < 0.05
+  );
+  const instanceId = matchingInstanceIndex >= 0
+    ? example.event_instances[matchingInstanceIndex].id
+    : crypto.randomUUID();
+  const instance = {
+    id: instanceId,
+    event: payload.event,
+    learning_title: learningTitle,
+    start_seconds: start,
+    end_seconds: end,
+    features,
+    details: {
+      paddle_form: paddleForm,
+      takeoff_shape: takeoffShape,
+      takeoff_footwork: takeoffFootwork,
+      takeoff_type: takeoffType,
+      movement_name: movementName,
+      training_zoom: Math.max(1, Number(payload.view?.zoom) || 1),
+    },
+    verified_by_user: true,
+    updated_at: new Date().toISOString(),
+  };
+  if (matchingInstanceIndex >= 0) example.event_instances[matchingInstanceIndex] = instance;
+  else example.event_instances.push(instance);
   if (config.mode === 'interval') {
-    example.segments = (example.segments || []).filter((segment) => segment.event !== payload.event);
-    example.segments.push({ event: payload.event, start_seconds: start, end_seconds: end });
+    example.segments = (example.segments || []).filter((segment) => !(
+      segment.event === payload.event
+      && Math.abs(Number(segment.start_seconds) - start) < 0.05
+      && Math.abs(Number(segment.end_seconds) - end) < 0.05
+    ));
+    example.segments.push({ id: instanceId, event: payload.event, learning_title: learningTitle, start_seconds: start, end_seconds: end });
     if (payload.event === 'catch_paddle') {
       const travel = example.segments.find((segment) => segment.event === 'travel_paddle');
       if (travel && travel.start_seconds <= start) travel.end_seconds = start;
@@ -503,33 +890,47 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
     example.segments.sort((a, b) => a.start_seconds - b.start_seconds);
   }
   example.segment_features = { ...(example.segment_features || {}), [payload.event]: features };
+  example.learning_sets = { ...(example.learning_sets || {}) };
+  const titleSet = Array.isArray(example.learning_sets[learningTitle]) ? example.learning_sets[learningTitle] : [];
+  example.learning_sets[learningTitle] = [
+    ...titleSet.filter((item) => item.id !== instanceId),
+    instance,
+  ];
   if (payload.event === 'takeoff') {
     example.motion_features = features;
-    example.labels = (example.labels || []).filter((label) => ![
-      'takeoff_start_hands_down', 'takeoff_end_hands_release',
-    ].includes(label.event));
+    example.labels = (example.labels || []).filter((label) => label.instance_id !== instanceId && !(
+      ['takeoff_start_hands_down', 'takeoff_end_hands_release'].includes(label.event)
+      && (Math.abs(Number(label.time_seconds) - start) < 0.05 || Math.abs(Number(label.time_seconds) - end) < 0.05)
+    ));
     example.labels.push(
-      { event: 'takeoff_start_hands_down', time_seconds: start },
-      { event: 'takeoff_end_hands_release', time_seconds: end },
+      { event: 'takeoff_start_hands_down', time_seconds: start, instance_id: instanceId },
+      { event: 'takeoff_end_hands_release', time_seconds: end, instance_id: instanceId },
     );
   } else if (config.mode === 'point') {
-    example.labels = (example.labels || []).filter((label) => label.event !== payload.event);
-    example.labels.push({ event: payload.event, time_seconds: start });
+    example.labels = (example.labels || []).filter((label) => label.instance_id !== instanceId);
+    example.labels.push({ event: payload.event, time_seconds: start, instance_id: instanceId });
   } else {
     const startLabel = `${payload.event}_start`;
     const endLabel = `${payload.event}_end`;
-    example.labels = (example.labels || []).filter((label) => ![startLabel, endLabel].includes(label.event));
+    example.labels = (example.labels || []).filter((label) => label.instance_id !== instanceId);
     example.labels.push(
-      { event: startLabel, time_seconds: start },
-      { event: endLabel, time_seconds: end },
+      { event: startLabel, time_seconds: start, instance_id: instanceId },
+      { event: endLabel, time_seconds: end, instance_id: instanceId },
     );
   }
   example.metrics = { ...(example.metrics || {}) };
   if (payload.event === 'takeoff') {
     example.metrics.takeoff_duration_seconds = Math.round((end - start) * 1000) / 1000;
+    example.metrics.takeoff_example_count = example.event_instances.filter((item) => item.event === 'takeoff').length;
   }
   if (payload.event === 'preparation') {
     example.metrics.preparation_duration_seconds = Math.round((end - start) * 1000) / 1000;
+  }
+  if (payload.event === 'riding') {
+    example.metrics.riding_example_count = example.event_instances.filter((item) => item.event === 'riding').length;
+  }
+  if (payload.event === 'turn') {
+    example.metrics.turn_example_count = example.event_instances.filter((item) => item.event === 'turn').length;
   }
   example.annotations = { ...(example.annotations || {}) };
   if (payload.event === 'paddle_form') {
@@ -548,9 +949,60 @@ ipcMain.handle('save-training-segment', async (event, payload) => {
   return {
     example,
     event_name: config.name,
+    learning_title: learningTitle,
     mode: config.mode,
     feature_samples: features.sample_count || 0,
+    instance_count: example.event_instances.filter((item) => item.event === payload.event).length,
+    instance_id: instanceId,
   };
+});
+
+ipcMain.handle('save-training-feedback', async (event, payload) => {
+  if (!payload?.sourcePath || !fs.existsSync(payload.sourcePath)) throw new Error('学習元の動画が見つかりません。');
+  if (payload.accepted !== false) throw new Error('誤検出フィードバックの内容が正しくありません。');
+  const duration = Number(payload.duration);
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error('動画の長さが正しくありません。');
+  const learningTitle = safeTrainingText(payload.learningTitle, 80);
+  if (!learningTitle) throw new Error('学習する題名を入力してください。');
+  const start = safeTrainingTime(payload.start, duration, '候補の開始');
+  const end = safeTrainingTime(payload.end, duration, '候補の終了');
+  if (end - start < 0.2) throw new Error('候補区間は0.2秒以上にしてください。');
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-negative-training-'));
+  const proxyPath = path.join(tempDir, 'negative.mp4');
+  let features;
+  try {
+    createTrainingFeatureProxy(payload.sourcePath, start, end, proxyPath, payload.view);
+    features = await postMultipartToSurfAnalyzer('/api/training/features', proxyPath);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+  const stat = fs.statSync(payload.sourcePath);
+  const identity = crypto.createHash('sha256')
+    .update(`${path.resolve(payload.sourcePath)}:${stat.size}:${stat.mtimeMs}`)
+    .digest('hex').slice(0, 24);
+  const data = readTrainingData();
+  let example = data.examples.find((item) => item.source_identity === identity);
+  if (!example) {
+    example = {
+      id: crypto.randomUUID(), source_name: path.basename(payload.sourcePath),
+      source_identity: identity, source_path: path.resolve(payload.sourcePath),
+      duration_seconds: Math.round(duration * 1000) / 1000,
+      segments: [], labels: [], event_instances: [], verified_by_user: true,
+    };
+    data.examples.push(example);
+  }
+  const feedback = {
+    id: crypto.randomUUID(), event: String(payload.event || 'movement'),
+    learning_title: learningTitle, start_seconds: start, end_seconds: end,
+    accepted: false, features, verified_by_user: true, updated_at: new Date().toISOString(),
+  };
+  example.negative_learning_sets = { ...(example.negative_learning_sets || {}) };
+  const negatives = Array.isArray(example.negative_learning_sets[learningTitle])
+    ? example.negative_learning_sets[learningTitle] : [];
+  example.negative_learning_sets[learningTitle] = [...negatives, feedback].slice(-100);
+  example.updated_at = new Date().toISOString();
+  writeTrainingData(data);
+  return { learning_title: learningTitle, feedback_samples: features.sample_count || 0 };
 });
 
 ipcMain.handle('delete-training-example', async (event, id) => {
@@ -559,6 +1011,95 @@ ipcMain.handle('delete-training-example', async (event, id) => {
   data.examples = data.examples.filter((example) => example.id !== id);
   if (data.examples.length !== before) writeTrainingData(data);
   return { deleted: before - data.examples.length };
+});
+
+ipcMain.handle('list-analysis-history', () => ({ records: readAnalysisHistory() }));
+
+ipcMain.handle('save-analysis-history', (event, payload) => {
+  const studentName = String(payload?.studentName || '').trim().slice(0, 80);
+  if (!studentName) throw new Error('生徒名を入力してください。');
+  const record = {
+    id: crypto.randomUUID(),
+    student_name: studentName,
+    source_name: path.basename(String(payload?.sourcePath || '動画')),
+    source_path: String(payload?.sourcePath || ''),
+    total_score: Math.max(0, Math.min(100, Number(payload?.result?.total_score) || 0)),
+    level: String(payload?.result?.level || '').slice(0, 30),
+    scores: {
+      takeoff_timing: Number(payload?.result?.takeoff_timing?.score) || 0,
+      body_balance: Number(payload?.result?.body_balance?.score) || 0,
+      hands_eyes: Number(payload?.result?.hands_eyes?.score) || 0,
+      foot_stance: Number(payload?.result?.foot_stance?.score) || 0,
+    },
+    improvement_points: (Array.isArray(payload?.result?.improvement_points)
+      ? payload.result.improvement_points : []).map((value) => String(value).slice(0, 300)).slice(0, 5),
+    overall_comment: String(payload?.result?.overall_comment || '').slice(0, 1000),
+    takeoff_duration_seconds: Number.isFinite(Number(payload?.takeoffDuration))
+      ? Math.max(0, Number(payload.takeoffDuration)) : null,
+    comparison_reference: String(payload?.comparisonReference || '').slice(0, 120),
+    analyzed_at: new Date().toISOString(),
+  };
+  const records = readAnalysisHistory();
+  const previous = [...records].reverse().find((item) => item.student_name === studentName);
+  records.push(record);
+  writeAnalysisHistory(records);
+  return {
+    record,
+    score_change: previous ? record.total_score - Number(previous.total_score || 0) : null,
+    takeoff_time_change: previous && record.takeoff_duration_seconds != null && previous.takeoff_duration_seconds != null
+      ? record.takeoff_duration_seconds - Number(previous.takeoff_duration_seconds) : null,
+  };
+});
+
+ipcMain.handle('delete-analysis-history', (event, id) => {
+  const records = readAnalysisHistory();
+  const filtered = records.filter((record) => record.id !== id);
+  writeAnalysisHistory(filtered);
+  return { deleted: records.length - filtered.length };
+});
+
+ipcMain.handle('export-ai-data-backup', async () => {
+  let references = [];
+  try {
+    const result = await requestSurfAnalyzer('/api/reference/list');
+    references = (result.references || []).map(({ preview, ...reference }) => reference);
+  } catch {}
+  const destination = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `Naoki-Cutter-AIデータ-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'Naoki Cutter AIデータ', extensions: ['json'] }],
+  });
+  if (destination.canceled || !destination.filePath) return { canceled: true };
+  const payload = {
+    format: 'naoki-cutter-ai-backup', version: 1, created_at: new Date().toISOString(),
+    training: readTrainingData(),
+    analysis_history: readAnalysisHistory(),
+    reference_tags: readReferenceTags(),
+    reference_catalog: references,
+  };
+  fs.writeFileSync(destination.filePath, JSON.stringify(payload, null, 2));
+  return { canceled: false, filePath: destination.filePath, trainingCount: payload.training.examples.length };
+});
+
+ipcMain.handle('import-ai-data-backup', async () => {
+  const selected = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'], filters: [{ name: 'Naoki Cutter AIデータ', extensions: ['json'] }],
+  });
+  if (selected.canceled || !selected.filePaths[0]) return { canceled: true };
+  const backup = JSON.parse(fs.readFileSync(selected.filePaths[0], 'utf8'));
+  if (backup.format !== 'naoki-cutter-ai-backup' || !Array.isArray(backup.training?.examples)) {
+    throw new Error('Naoki CutterのAIバックアップファイルではありません。');
+  }
+  const training = readTrainingData();
+  const byId = new Map(training.examples.map((example) => [example.id, example]));
+  for (const example of backup.training.examples) if (example?.id) byId.set(example.id, example);
+  training.examples = [...byId.values()];
+  writeTrainingData(training);
+  const history = readAnalysisHistory();
+  const historyById = new Map(history.map((record) => [record.id, record]));
+  for (const record of backup.analysis_history || []) if (record?.id) historyById.set(record.id, record);
+  writeAnalysisHistory([...historyById.values()]);
+  writeReferenceTags({ ...readReferenceTags(), ...(backup.reference_tags || {}) });
+  return { canceled: false, trainingCount: training.examples.length, historyCount: historyById.size };
 });
 
 ipcMain.handle('analyze-form-local', async (event, source) => {
@@ -587,10 +1128,64 @@ ipcMain.handle('analyze-form-cloud', async (event, source) => {
   const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-form-cloud-'));
   const proxyPath = path.join(tempDir, 'form.mp4');
   try {
-    createSyncProxy(source, proxyPath);
+    const range = createSyncProxy(source, proxyPath);
     const result = await postMultipartToSurfAnalyzer('/api/analyze', proxyPath);
     const { frame_images, ...summary } = result;
-    return summary;
+    const frames = Array.isArray(summary.frames) ? summary.frames : [];
+    const analysisMarkers = frames.map((frame, index) => ({
+      time: range.searchStart + range.duration * (index + 1) / (frames.length + 1),
+      label: frame.scene || `解析ポイント${index + 1}`,
+      comment: frame.frame_comment || '',
+      annotations: Array.isArray(frame.annotations) ? frame.annotations : [],
+    }));
+    return { ...summary, analyzed_range: range, analysis_markers: analysisMarkers };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+function runLessonFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const process = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    process.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8000); });
+    process.once('error', reject);
+    process.once('exit', (code) => code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg終了コード ${code}`)));
+  });
+}
+
+ipcMain.handle('create-lesson-video', async (event, payload) => {
+  const sourcePath = String(payload?.sourcePath || '');
+  if (!fs.existsSync(sourcePath)) throw new Error('レッスン動画の元動画が見つかりません。');
+  const markers = (Array.isArray(payload?.markers) ? payload.markers : [])
+    .map((marker) => Number(marker.time)).filter(Number.isFinite).slice(0, 6);
+  if (!markers.length) throw new Error('先にクラウド詳細解析を実行してください。');
+  const output = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: `${path.basename(sourcePath, path.extname(sourcePath))}_lesson.mp4`,
+    filters: [{ name: 'MP4動画', extensions: ['mp4'] }],
+  });
+  if (output.canceled || !output.filePath) return { canceled: true };
+  const trimStart = Math.max(0, Number(payload.trimStart) || 0);
+  const trimEnd = Math.max(trimStart, Number(payload.trimEnd) || trimStart);
+  const tempDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'naoki-lesson-'));
+  try {
+    const segmentPaths = [];
+    for (let index = 0; index < markers.length; index += 1) {
+      const start = Math.max(trimStart, markers[index] - 2);
+      const duration = Math.max(0.5, Math.min(trimEnd, markers[index] + 2) - start);
+      const segmentPath = path.join(tempDir, `segment-${String(index).padStart(2, '0')}.mp4`);
+      await runLessonFfmpeg([
+        '-y', '-v', 'error', '-ss', String(start), '-t', String(duration), '-i', sourcePath,
+        '-an', '-vf', 'setpts=1.333333*(PTS-STARTPTS),fps=30,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,tpad=stop_mode=clone:stop_duration=1',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart', segmentPath,
+      ]);
+      segmentPaths.push(segmentPath);
+    }
+    const listPath = path.join(tempDir, 'segments.txt');
+    fs.writeFileSync(listPath, segmentPaths.map((filePath) => `file '${filePath.replaceAll("'", "'\\''")}'`).join('\n'));
+    await runLessonFfmpeg(['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', output.filePath]);
+    return { canceled: false, filePath: output.filePath, segmentCount: segmentPaths.length };
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -607,6 +1202,7 @@ ipcMain.handle('analyze-exported-video', async (event, filePath) => {
 ipcMain.handle('save-exported-as-reference', async (event, { filePath, name, description }) => {
   const cleanName = String(name || '').trim();
   if (!cleanName) throw new Error('参考動画の名前を入力してください。');
+  if (!filePath || !fs.existsSync(filePath)) throw new Error('参考動画にする書き出し済みファイルが見つかりません。もう一度書き出してください。');
   const result = await postMultipartToSurfAnalyzer('/api/reference/upload', filePath, {
     name: cleanName,
     description: String(description || ''),
@@ -614,6 +1210,50 @@ ipcMain.handle('save-exported-as-reference', async (event, { filePath, name, des
   const { preview, ...summary } = result;
   return summary;
 });
+
+ipcMain.handle('list-reference-videos', async () => {
+  const result = await requestSurfAnalyzer('/api/reference/list');
+  const savedTags = readReferenceTags();
+  return {
+    references: (Array.isArray(result.references) ? result.references : []).map(({ preview, ...reference }) => ({
+      ...reference,
+      tags: savedTags[reference.id] || {},
+    })),
+  };
+});
+
+ipcMain.handle('save-reference-tags', (event, payload) => {
+  const id = String(payload?.id || '');
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('参考動画のIDが正しくありません。');
+  const clean = (value, max = 80) => String(value || '').trim().slice(0, max);
+  const tags = readReferenceTags();
+  tags[id] = {
+    movement: clean(payload.tags?.movement),
+    board: clean(payload.tags?.board),
+    angle: clean(payload.tags?.angle),
+    level: clean(payload.tags?.level),
+    wave: clean(payload.tags?.wave, 120),
+  };
+  writeReferenceTags(tags);
+  return tags[id];
+});
+
+ipcMain.handle('delete-reference-video', async (event, id) => {
+  const safeId = String(id || '').trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(safeId)) throw new Error('参考動画のIDが正しくありません。');
+  const result = await requestSurfAnalyzer(`/api/reference/${encodeURIComponent(safeId)}`, 'DELETE');
+  const tags = readReferenceTags();
+  delete tags[safeId];
+  writeReferenceTags(tags);
+  return result;
+});
+
+ipcMain.handle('surf-analyzer-status', async () => ({
+  state: await probeSurfAnalyzer() ? 'ready' : (surfAnalyzerProc ? 'starting' : 'stopped'),
+  managed: Boolean(surfAnalyzerProc),
+}));
+
+ipcMain.handle('restart-surf-analyzer', () => startSurfAnalyzer({ restart: true }));
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -631,6 +1271,15 @@ function createWindow() {
 app.whenReady().then(() => {
   pruneProxyCache(previewProxiesDir());
   createWindow();
+  startSurfAnalyzer().catch((error) => emitSurfAnalyzerStatus({ state: 'error', message: error.message }));
+});
+
+app.on('before-quit', () => {
+  cancelPreviewProxyEncodes();
+  if (surfAnalyzerProc) {
+    surfAnalyzerProc.kill('SIGTERM');
+    surfAnalyzerProc = null;
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -906,7 +1555,7 @@ ipcMain.handle('delete-projects-and-cache', async () => {
   clearAutosaves(autosavesDir());
   clearProxyCache(previewProxiesDir());
   activePreviewProxyPaths.clear();
-  previewProxyEpoch += 1;
+  cancelPreviewProxyEncodes();
   await session.defaultSession.clearCache();
   await session.defaultSession.clearStorageData();
   const afterCache = getDirSize(userDataPath);
@@ -984,10 +1633,12 @@ function spawnPreviewProxyEncode(filePath, tempPath, scale, videoArgs) {
       errorText = (errorText + chunk.toString()).slice(-12000);
     });
     proc.on('error', (error) => {
+      activePreviewProxyProcs.delete(proc);
       fs.rmSync(tempPath, { force: true });
       reject(error);
     });
     proc.on('close', (code) => {
+      activePreviewProxyProcs.delete(proc);
       if (code !== 0 || !fs.existsSync(tempPath)) {
         fs.rmSync(tempPath, { force: true });
         reject(new Error(errorText || `ffmpeg exited ${code}`));
@@ -1842,7 +2493,7 @@ ipcMain.handle('clear-cache', async () => {
   const before = getDirSize(userDataPath);
   clearProxyCache(previewProxiesDir());
   activePreviewProxyPaths.clear();
-  previewProxyEpoch += 1;
+  cancelPreviewProxyEncodes();
   await session.defaultSession.clearCache();
   await session.defaultSession.clearStorageData();
   const after = getDirSize(userDataPath);

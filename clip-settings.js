@@ -154,6 +154,68 @@
     };
   }
 
+  function normalizeAutoCutSegments(rawSegments, clipStart, clipEnd, mode) {
+    const startLimit = Math.max(0, Number(clipStart) || 0);
+    const endLimit = Math.max(startLimit, Number(clipEnd) || startLimit);
+    const minimumDuration = mode === 'riding' ? 1 : 0.35;
+    const normalized = (Array.isArray(rawSegments) ? rawSegments : [])
+      .map((segment) => ({
+        start: Math.max(startLimit, Math.min(endLimit, Number(segment.start))),
+        end: Math.max(startLimit, Math.min(endLimit, Number(segment.end))),
+        confidence: Math.max(0, Math.min(1, Number(segment.confidence) || 0)),
+        takeoffStart: segment.takeoff_start !== null && segment.takeoff_start !== undefined
+          && segment.takeoff_start !== '' && Number.isFinite(Number(segment.takeoff_start))
+          ? Math.max(startLimit, Math.min(endLimit, Number(segment.takeoff_start)))
+          : null,
+        takeoffEnd: segment.takeoff_end !== null && segment.takeoff_end !== undefined
+          && segment.takeoff_end !== '' && Number.isFinite(Number(segment.takeoff_end))
+          ? Math.max(startLimit, Math.min(endLimit, Number(segment.takeoff_end)))
+          : null,
+      }))
+      .filter((segment) => Number.isFinite(segment.start) && Number.isFinite(segment.end))
+      .filter((segment) => segment.end - segment.start >= minimumDuration)
+      .sort((a, b) => a.start - b.start);
+
+    // Five-minute analysis chunks overlap. Merge duplicate detections from the
+    // overlap, but keep genuinely separate rides as separate timeline clips.
+    const merged = [];
+    normalized.forEach((segment) => {
+      const previous = merged[merged.length - 1];
+      const sameEvent = previous && segment.start <= previous.end + 0.35;
+      if (!sameEvent) {
+        merged.push({ ...segment });
+        return;
+      }
+      previous.end = Math.max(previous.end, segment.end);
+      previous.confidence = Math.max(previous.confidence, segment.confidence);
+      if (segment.takeoffStart !== null) {
+        previous.takeoffStart = previous.takeoffStart === null
+          ? segment.takeoffStart : Math.min(previous.takeoffStart, segment.takeoffStart);
+      }
+      if (segment.takeoffEnd !== null) {
+        previous.takeoffEnd = previous.takeoffEnd === null
+          ? segment.takeoffEnd : Math.max(previous.takeoffEnd, segment.takeoffEnd);
+      }
+    });
+    return merged;
+  }
+
+  function replaceTimelineClipWithSegments(clips, transitions, clipId, replacementClips) {
+    const index = clips.findIndex((clip) => clip.id === clipId);
+    if (index < 0 || !Array.isArray(replacementClips) || !replacementClips.length) {
+      return { clips, transitions, index: -1 };
+    }
+    const nextClips = clips.slice();
+    const nextTransitions = (transitions || []).map((transition) => ({ ...transition }));
+    nextClips.splice(index, 1, ...replacementClips);
+    const internalCuts = Array.from(
+      { length: Math.max(0, replacementClips.length - 1) },
+      () => ({ type: 'cut', duration: 0.5 })
+    );
+    nextTransitions.splice(index, 0, ...internalCuts);
+    return { clips: nextClips, transitions: nextTransitions, index };
+  }
+
   root.cloneClipSettingsForTarget = cloneClipSettingsForTarget;
   root.cloneZoomForTarget = cloneZoomForTarget;
   root.upsertPanKeyframe = upsertPanKeyframe;
@@ -163,11 +225,14 @@
   root.clipPlaybackDuration = clipPlaybackDuration;
   root.sequencePlaybackDuration = sequencePlaybackDuration;
   root.estimateExportSize = estimateExportSize;
+  root.normalizeAutoCutSegments = normalizeAutoCutSegments;
+  root.replaceTimelineClipWithSegments = replaceTimelineClipWithSegments;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
       comparisonPairFromSelection, timelineSelectionAfterClick, removeSelectedClipsFromTimeline,
       clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
+      normalizeAutoCutSegments, replaceTimelineClipWithSegments,
     };
   }
 }(typeof globalThis !== 'undefined' ? globalThis : this));

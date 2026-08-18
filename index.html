@@ -14,9 +14,10 @@
     <nav class="workspace-tabs" aria-label="作業画面">
       <button id="editWorkspaceBtn" class="active" type="button">編集</button>
       <button id="formWorkspaceBtn" type="button">フォーム解析</button>
-      <button id="trainingWorkspaceBtn" type="button">学習データ</button>
+      <button id="trainingWorkspaceBtn" type="button">解析データ</button>
     </nav>
     <div class="header-media-actions">
+      <button id="surfAnalyzerStatusBtn" class="analyzer-status starting" type="button" title="フォーム解析AIの状態。停止時はクリックで再起動">● AI準備中</button>
       <button id="previewSizeBtn" class="preview-size-btn" type="button" aria-pressed="false" title="再生画面の大きさを切り替える">⛶ 再生画面を大きく</button>
       <button id="recordModeBtn" class="record-mode-btn" disabled title="音声付き画面収録モード（R）">● 音声付き画面収録</button>
       <button id="addFilesBtn">＋ 動画を追加</button>
@@ -63,9 +64,13 @@
               <button id="compareActiveBackBtn" title="選択中の動画を1コマ早める">−1コマ</button>
               <button id="compareActiveForwardBtn" title="選択中の動画を1コマ遅らせる">＋1コマ</button>
               <select id="compareSyncModeEditor" class="compare-sync-mode" aria-label="AI同期基準">
+                <option value="catch_start">キャッチ開始</option>
                 <option value="takeoff_start">テイクオフ開始</option>
                 <option value="hands_down">手をつく</option>
                 <option value="standing">立ち上がり</option>
+                <option value="takeoff_end">手が離れる</option>
+                <option value="bottom_turn">ボトムターン開始</option>
+                <option value="turn_start">各ターン開始</option>
               </select>
               <button id="compareAutoSyncEditorBtn" class="compare-ai-btn">AIで揃える</button>
               <button id="comparePlayBtn">▶ 同時再生</button>
@@ -127,8 +132,22 @@
           </div>
         </div>
         <div class="edit-action-strip">
+          <div class="toolbar-group ai-auto-cut-controls">
+            <span class="control-label">AI自動カット</span>
+            <button id="autoCutTakeoffBtn" disabled title="複数のテイクオフ動作を検出して、その場面だけを残す">テイクオフだけ残す</button>
+            <button id="autoCutRidingBtn" disabled title="複数のテイクオフからライディング終了までを検出して残す">ライディングを残す</button>
+            <select id="batchAiMode" title="一括検出する動作"><option value="takeoff">一括: テイクオフ</option><option value="riding">一括: ライディング</option></select>
+            <select id="batchAiRole" title="作成した候補の振り分け"><option value="normal">通常編集</option><option value="learning">学習用</option><option value="reference">参考動画候補</option></select>
+            <button id="batchAiStartBtn" title="書き出し選択中の動画（未選択時は全動画）を順番にAI処理">一括AI処理</button>
+            <button id="batchAiPauseBtn" class="hidden">一時停止</button>
+            <button id="batchAiCancelBtn" class="hidden">中止</button>
+            <span id="autoCutStatus" class="zoom-hint" aria-live="polite"></span>
+          </div>
+          <div id="aiQueuePanel" class="ai-queue-panel hidden" aria-live="polite"><strong>AI処理キュー</strong><span id="aiQueueStatus"></span><div id="aiQueueList"></div></div>
+          <div class="toolbar-divider"></div>
           <div class="toolbar-group training-range-controls">
             <span class="control-label">学習区間</span>
+            <input id="editTrainingTitle" class="training-title-input" type="text" maxlength="80" placeholder="題名（テイクオフ／アップス／パドル等）" disabled>
             <select id="editTrainingEvent" disabled>
               <option value="preparation">準備（波待ち→回ってパドル）</option>
               <option value="catch_timing">キャッチのタイミング</option>
@@ -137,6 +156,8 @@
               <option value="hands_down_timing">手をつくタイミング</option>
               <option value="takeoff">テイクオフ動作</option>
               <option value="takeoff_posture">テイクオフの姿勢</option>
+              <option value="riding">ライディング（開始→終了）</option>
+              <option value="turn">ターン・動作</option>
             </select>
             <button id="editTrainingStartBtn" disabled title="現在位置を学習区間の開始にする">［開始</button>
             <button id="editTrainingEndBtn" disabled title="現在位置を学習区間の終了にする">終了］</button>
@@ -145,6 +166,7 @@
             <input id="editTakeoffShape" class="training-detail hidden" type="text" maxlength="120" placeholder="テイクオフの形" disabled>
             <input id="editTakeoffFootwork" class="training-detail hidden" type="text" maxlength="120" placeholder="足の出し方" disabled>
             <input id="editTakeoffType" class="training-detail hidden" type="text" maxlength="120" placeholder="テイクオフの種類" disabled>
+            <input id="editMovementName" class="training-detail hidden" type="text" maxlength="120" placeholder="例：ボトムターン／カットバック" disabled>
             <button id="editTrainingSaveBtn" disabled>学習データに追加</button>
           </div>
           <div class="toolbar-divider"></div>
@@ -249,9 +271,13 @@
         </div>
         <div class="compare-ai-sync-row">
           <select id="compareSyncMode" aria-label="AI同期基準">
+            <option value="catch_start">キャッチ開始</option>
             <option value="takeoff_start">テイクオフ開始</option>
             <option value="hands_down">手をついた瞬間</option>
             <option value="standing">立ち上がった瞬間</option>
+            <option value="takeoff_end">手が離れた瞬間</option>
+            <option value="bottom_turn">ボトムターン開始</option>
+            <option value="turn_start">各ターン開始</option>
           </select>
           <button id="compareAutoSyncBtn" class="compare-ai-btn" disabled>AIでタイミングを揃える</button>
         </div>
@@ -346,7 +372,10 @@
           <h2>サーフィンフォーム解析</h2>
           <p>編集に追加した元動画を直接解析します。先に書き出す必要はありません。</p>
         </div>
-        <select id="formSourceSelect" aria-label="解析する動画"><option value="">動画を選択</option></select>
+        <div class="form-source-controls">
+          <input id="formStudentName" type="text" maxlength="80" placeholder="生徒名（履歴保存用）" />
+          <select id="formSourceSelect" aria-label="解析する動画"><option value="">動画を選択</option></select>
+        </div>
       </div>
       <div class="form-video-wrap">
         <video id="formVideo" playsinline controls></video>
@@ -355,6 +384,7 @@
       <div class="form-analysis-actions">
         <button id="formLocalAnalyzeBtn" class="form-local-btn" disabled>Mac内AIで動作を検出</button>
         <button id="formCloudAnalyzeBtn" class="form-cloud-btn" disabled>クラウドで詳しく解析</button>
+        <button id="formLessonVideoBtn" class="form-lesson-btn" disabled>解析ポイントからレッスン動画作成</button>
       </div>
       <p class="form-privacy-note"><b>Mac内AI：</b>動画は外部へ送りません。　<b>クラウド解析：</b>低解像度の解析用動画をsurfing-analyzer経由でClaudeへ送信します。</p>
       <div id="formAnalysisStatus" class="form-analysis-status"></div>
@@ -362,8 +392,11 @@
     </section>
 
     <aside class="form-label-panel">
-      <h2>正解データ</h2>
-      <p class="project-hint">AI候補を確認・修正して保存すると、今後の比較・解析データとして蓄積されます。</p>
+      <h2>AI学習データ</h2>
+      <p class="project-hint">動作判定の精度を上げるデータです。動画本体や参考動画としては保存されません。</p>
+      <label>学習する題名
+        <input id="formLearningTitle" type="text" maxlength="80" placeholder="例：テイクオフ／アップス／パドル" />
+      </label>
       <label>キャッチのパドル開始（テイクオフのみなら空欄）
         <div class="form-time-row"><input id="formCatchStart" type="number" min="0" step="0.01" /><button data-form-time="catch">現在位置</button></div>
       </label>
@@ -376,12 +409,22 @@
       <div id="formEventBar" class="form-event-bar">
         <span class="travel">移動パドル</span><span class="catch">キャッチ</span><span class="takeoff">テイクオフ</span>
       </div>
-      <button id="formSaveTrainingBtn" class="primary" disabled>確認済みデータとして保存</button>
+      <button id="formSaveTrainingBtn" class="primary" disabled>AI学習データとして保存</button>
       <p id="formSaveStatus" class="status-text"></p>
     </aside>
   </main>
 
   <main id="trainingWorkspace" class="workspace-view training-workspace hidden">
+    <section class="data-purpose-guide">
+      <article><span>AI精度向上用</span><h2>学習データ</h2><p>正しい動作区間と特徴だけをMac内に保存します。動画本体は保存しません。</p></article>
+      <article class="reference-purpose"><span>生徒との比較用</span><h2>参考動画</h2><p>上級者・お手本動画から比較用フレームを解析アプリに登録します。学習データとは別管理です。</p></article>
+    </section>
+    <section class="ai-backup-bar">
+      <div><strong>AIデータのバックアップ</strong><span>学習特徴・生徒履歴・参考動画情報だけを保存します。元動画は含みません。</span></div>
+      <button id="exportAiBackupBtn">バックアップを書き出す</button>
+      <button id="importAiBackupBtn">別のMacから復元</button>
+      <span id="aiBackupStatus" class="status-text"></span>
+    </section>
     <section class="training-library">
       <div class="training-title-row">
         <div><h2>サーフィン動作の学習データ</h2><p>動画本体は保存せず、確認した時刻と動作名だけをMac内に蓄積します。</p></div>
@@ -394,9 +437,34 @@
         <div><b>キャッチのパドル</b><span>波をつかみテイクオフへ入る直前のパドル</span></div>
         <div><b>手をつくタイミング</b><span>手をボードについた瞬間</span></div>
         <div><b>テイクオフ</b><span>タイミング・姿勢・足の出し方・種類・所要時間</span></div>
+        <div><b>ライディング</b><span>テイクオフ後からライディング終了まで</span></div>
+        <div><b>ターン・動作</b><span>ボトムターン・トップターン・カットバックなど</span></div>
       </div>
       <div id="trainingExampleList" class="training-example-list"></div>
       <p id="trainingEmpty" class="training-empty">正解データはまだありません。</p>
+    </section>
+    <section class="analysis-history-library">
+      <div class="training-title-row">
+        <div><h2>生徒ごとの成長履歴</h2><p>クラウド詳細解析のスコアと改善点を保存します。動画本体は保存しません。</p></div>
+        <button id="refreshAnalysisHistoryBtn">再読み込み</button>
+      </div>
+      <div id="analysisHistoryList" class="training-example-list"></div>
+      <p id="analysisHistoryEmpty" class="training-empty">解析履歴はまだありません。</p>
+    </section>
+    <section class="reference-library">
+      <div class="training-title-row">
+        <div><h2>生徒との比較に使う参考動画</h2><p>直近に書き出した動画をお手本として登録し、surfing-analyzerの比較解析で使用します。</p></div>
+        <div class="reference-search-actions"><input id="referenceSearchInput" type="search" placeholder="タグ・名前で検索" /><button id="refreshReferencesBtn">再読み込み</button></div>
+      </div>
+      <div class="reference-quick-form">
+        <label>参考動画名<input id="referenceQuickName" type="text" maxlength="100" placeholder="例：テイクオフのお手本" /></label>
+        <label>説明<input id="referenceQuickDescription" type="text" maxlength="300" placeholder="例：前足を出すタイミングの比較用" /></label>
+        <button id="saveLatestAsReferenceBtn" class="primary" disabled>直近の書き出しを参考動画に登録</button>
+      </div>
+      <p id="referenceLatestHint" class="project-hint">先に参考にしたいクリップを書き出してください。</p>
+      <p id="referenceQuickStatus" class="status-text"></p>
+      <div id="referenceVideoList" class="training-example-list reference-video-list"></div>
+      <p id="referenceVideoEmpty" class="training-empty">参考動画はまだありません。</p>
     </section>
   </main>
 
@@ -413,10 +481,31 @@
       <div id="analysisError" class="analysis-error hidden"></div>
       <div id="analysisResult" class="analysis-result hidden"></div>
       <div id="referenceSaveForm" class="reference-save-form hidden">
+        <h3>生徒との比較用「参考動画」へ登録</h3>
+        <p class="project-hint">AI学習データとは別です。この動画から比較用フレームを保存します。</p>
         <label>名前<input id="referenceNameInput" type="text" maxlength="100" /></label>
         <label>説明<textarea id="referenceDescriptionInput" rows="3" placeholder="例：パドル開始からテイクオフまでの参考動画"></textarea></label>
         <button id="saveReferenceBtn" class="primary">参考動画として保存</button>
         <p id="referenceSaveStatus" class="status-text"></p>
+      </div>
+    </section>
+  </div>
+
+  <div id="aiCandidateReviewOverlay" class="analysis-overlay hidden">
+    <section class="analysis-dialog candidate-review-dialog">
+      <div class="analysis-title-row">
+        <div><h2>AI検出候補の確認</h2><p class="project-hint">正しい・違うを選び、必要なら開始／終了を修正してください。結果は題名別の学習データになります。</p></div>
+        <button id="candidateReviewCloseBtn">閉じる</button>
+      </div>
+      <label class="candidate-title-label">学習する題名
+        <input id="candidateLearningTitle" type="text" maxlength="80" placeholder="例：テイクオフ／ライディング" />
+      </label>
+      <video id="candidateReviewVideo" class="candidate-review-video" playsinline controls></video>
+      <div id="candidateReviewList" class="candidate-review-list"></div>
+      <p id="candidateReviewStatus" class="status-text"></p>
+      <div class="candidate-review-actions">
+        <button id="candidateReviewCancelBtn">適用しない</button>
+        <button id="candidateReviewApplyBtn" class="primary">確認結果を適用して学習</button>
       </div>
     </section>
   </div>

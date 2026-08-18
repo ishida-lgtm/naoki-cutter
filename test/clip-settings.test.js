@@ -4,6 +4,7 @@ const {
   cloneClipSettingsForTarget, cloneZoomForTarget, upsertPanKeyframe,
   comparisonPairFromSelection, removeSelectedClipsFromTimeline,
   timelineSelectionAfterClick, clipPlaybackDuration, sequencePlaybackDuration, estimateExportSize,
+  normalizeAutoCutSegments, replaceTimelineClipWithSegments,
 } = require('../clip-settings');
 
 test('Zoom・位置・速度設定を別クリップへコピーできる', () => {
@@ -120,4 +121,39 @@ test('4KはフルHDより大きくH.265はH.264より小さく見積もる', () 
   assert.ok(fourK.bytes > fhd.bytes);
   assert.ok(hevc.bytes < fourK.bytes);
   assert.ok(fourK.lowBytes < fourK.bytes && fourK.highBytes > fourK.bytes);
+});
+
+test('AI自動カット候補をクリップ範囲内へ揃え重複検出をまとめる', () => {
+  const result = normalizeAutoCutSegments([
+    { start: 8.5, end: 10.2, confidence: 0.7, takeoff_start: 9, takeoff_end: 10 },
+    { start: 9.8, end: 11, confidence: 0.9, takeoff_start: 10, takeoff_end: 10.6 },
+    { start: 18, end: 20, confidence: 0.8 },
+    { start: 25, end: 25.1, confidence: 1 },
+  ], 9, 19, 'takeoff');
+  assert.deepEqual(result, [
+    { start: 9, end: 11, confidence: 0.9, takeoffStart: 9, takeoffEnd: 10.6 },
+    { start: 18, end: 19, confidence: 0.8, takeoffStart: null, takeoffEnd: null },
+  ]);
+});
+
+test('元クリップを複数のAI検出区間へ置き換えて前後のつなぎ目を保つ', () => {
+  const clips = [{ id: 1 }, { id: 2 }, { id: 3 }];
+  const transitions = [
+    { type: 'crossfade', duration: 1 },
+    { type: 'dissolve', duration: 2 },
+  ];
+  const result = replaceTimelineClipWithSegments(
+    clips,
+    transitions,
+    2,
+    [{ id: 20 }, { id: 21 }, { id: 22 }]
+  );
+  assert.deepEqual(result.clips.map((clip) => clip.id), [1, 20, 21, 22, 3]);
+  assert.deepEqual(result.transitions, [
+    { type: 'crossfade', duration: 1 },
+    { type: 'cut', duration: 0.5 },
+    { type: 'cut', duration: 0.5 },
+    { type: 'dissolve', duration: 2 },
+  ]);
+  assert.deepEqual(clips.map((clip) => clip.id), [1, 2, 3]);
 });
